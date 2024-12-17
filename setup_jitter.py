@@ -1,18 +1,16 @@
 
 # jax
-import dLux as dl
 import dLuxToliman as dlT
+import dLux
+from dLuxToliman import AlphaCen
 import jax
-from jax import numpy as np
+from jax import numpy as np, Array
 import jax.scipy as jsp
 
 import zodiax as zdx
-
-
-from dLuxToliman import AlphaCen
-from jax import Array
-import dLux
 from zodiax import filter_vmap
+
+jax.config.update("jax_enable_x64", True)
 
 Source = lambda: dLux.BaseSource
 Optics = lambda: dLux.BaseOpticalSystem
@@ -150,11 +148,11 @@ def setup_jitter(
     )
 
     # creating telescopes
-    lin_det = dl.LayeredDetector([('Downsample', dl.Downsample(oversample))])
+    lin_det = dLux.LayeredDetector([('Downsample', dLux.Downsample(oversample))])
     shm_det = lin_det
-    norm_det = dl.LayeredDetector([
+    norm_det = dLux.LayeredDetector([
         ('Jitter', dlT.GaussianJitter(**norm_params)),
-        ('Downsample', dl.Downsample(norm_osamp)),
+        ('Downsample', dLux.Downsample(norm_osamp)),
     ])
 
     lin_tel = dlT.JitteredToliman(source=src, optics=optics, **lin_params).set('detector', lin_det)
@@ -166,11 +164,13 @@ def setup_jitter(
     shm_data = shm_tel.jitter_model()
     norm_data = norm_tel.model()
     # setting norm_tel to a reasonable oversample
-    norm_tel = norm_tel.set(['oversample', "Downsample.kernel_size"], 2*[oversample])
+    # norm_tel = norm_tel.set(['oversample', "Downsample.kernel_size"], 2*[oversample])
+    
 
-    jitter_model_fn = lambda model, data: jsp.stats.poisson.logpmf(model.jitter_model(), data).sum()
+    jitter_model_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.jitter_model()).sum()
+    model_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.model()).sum()
     calc_cov = lambda model, data, parameters: zdx.covariance_matrix(model, parameters, jitter_model_fn, data, shape_dict={'wavelengths': 1})
-    norm_calc_cov = lambda model, data, parameters: zdx.covariance_matrix(model, parameters, zdx.poiss_loglike, data, shape_dict={'wavelengths': 1})
+    norm_calc_cov = lambda model, data, parameters: zdx.covariance_matrix(model, parameters, model_fn, data, shape_dict={'wavelengths': 1})
 
     # models = {
     #     'lin': lin_tel.set(
