@@ -1,24 +1,22 @@
-
-# jax
-import dLuxToliman as dlT
-import dLux
-from dLuxToliman import AlphaCen
 import jax
-from jax import numpy as np, Array
-import jax.scipy as jsp
+from jax import numpy as np, scipy as jsp, Array
+
+jax.config.update("jax_enable_x64", True)
 
 import zodiax as zdx
 from zodiax import filter_vmap
 
-jax.config.update("jax_enable_x64", True)
+import dLuxToliman as dlT
+import dLux
+from dLuxToliman import AlphaCen
 
 Source = lambda: dLux.BaseSource
 Optics = lambda: dLux.BaseOpticalSystem
 
-class AlphaCenMeanWavel(AlphaCen):
 
-    n_wavels : int
-    mean_wavelength : float
+class AlphaCenMeanWavel(AlphaCen):
+    n_wavels: int
+    mean_wavelength: float
 
     def __init__(
         self,
@@ -108,21 +106,32 @@ class AlphaCenMeanWavel(AlphaCen):
         # Return array is simple
         return output.sum(0)
 
+
 def setup_jitter(
-    angle=0.,
-    mag=0.5*0.375,
+    angle=0.0,
+    mag=0.5 * 0.375,
     shear=0.2,
     r=0.25e-4,
     oversample=4,
     norm_osamp=6,
-    det_pscale=np.array(0.375),
+    det_pscale=0.375,
     det_npixels=128,
     kernel_size=17,
-    n_psfs=4,
-    ):
-
-    lin_params = {"jitter_mag": mag, "jitter_angle": angle, "jitter_shape": 'linear', "n_psfs": n_psfs}
-    shm_params = {"jitter_mag": mag, "jitter_angle": angle, "jitter_shape": 'shm', "n_psfs": n_psfs}
+    n_psfs=5,
+    prior_fn=lambda model: np.array(0.0),
+):
+    lin_params = {
+        "jitter_mag": mag,
+        "jitter_angle": angle,
+        "jitter_shape": "linear",
+        "n_psfs": n_psfs,
+    }
+    shm_params = {
+        "jitter_mag": mag,
+        "jitter_angle": angle,
+        "jitter_shape": "shm",
+        "n_psfs": n_psfs,
+    }
     norm_params = {"r": r, "shear": shear, "phi": angle, "kernel_size": kernel_size}
     radial_orders = [2, 3]
 
@@ -132,102 +141,99 @@ def setup_jitter(
         psf_npixels=det_npixels,
         radial_orders=radial_orders,
         psf_pixel_scale=det_pscale,
-        )
-
-    optics = optics.divide('aperture.basis', 1e9) # Set basis units to nanometers
+    )
+    optics = optics.divide("aperture.basis", 1e9)  # Set basis units to nanometers
     norm_optics = optics.set("oversample", norm_osamp)
 
     # Creating common source
-    src = AlphaCenMeanWavel(
-        separation=np.array(10.),
-        position_angle=np.array(90.),
-        x_position=np.array(0.),
-        y_position=np.array(0.),
+    src = AlphaCen(
+        separation=np.array(10.0),
+        position_angle=np.array(90.0),
+        x_position=np.array(0.0),
+        y_position=np.array(0.0),
         log_flux=np.array(6.832),
         contrast=np.array(3.37),
     )
 
     # creating telescopes
-    lin_det = dLux.LayeredDetector([('Downsample', dLux.Downsample(oversample))])
+    lin_det = dLux.LayeredDetector([("Downsample", dLux.Downsample(oversample))])
     shm_det = lin_det
-    norm_det = dLux.LayeredDetector([
-        ('Jitter', dlT.GaussianJitter(**norm_params)),
-        ('Downsample', dLux.Downsample(norm_osamp)),
-    ])
+    norm_det = dLux.LayeredDetector(
+        [
+            ("Jitter", dlT.GaussianJitter(**norm_params)),
+            ("Downsample", dLux.Downsample(norm_osamp)),
+        ]
+    )
 
-    lin_tel = dlT.JitteredToliman(source=src, optics=optics, **lin_params).set('detector', lin_det)
-    shm_tel = dlT.JitteredToliman(source=src, optics=optics, **shm_params).set('detector', shm_det)
-    norm_tel = dlT.Toliman(source=src, optics=norm_optics).set('detector', norm_det)
+    # creating models
+    lin_tel = dlT.JitteredToliman(source=src, optics=optics, **lin_params).set(
+        "detector", lin_det
+    )
+    shm_tel = dlT.JitteredToliman(source=src, optics=optics, **shm_params).set(
+        "detector", shm_det
+    )
+    norm_tel = dlT.Toliman(source=src, optics=norm_optics).set("detector", norm_det)
 
-    # creating simulated data
-    lin_data = lin_tel.jitter_model()
-    shm_data = shm_tel.jitter_model()
-    norm_data = norm_tel.model()
-    # setting norm_tel to a reasonable oversample
-    # norm_tel = norm_tel.set(['oversample', "Downsample.kernel_size"], 2*[oversample])
-    
+    # creating simulated data at a high oversample
+    lin_data = (
+        lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    ).jitter_model()
+    shm_data = (
+        shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    ).jitter_model()
+    norm_data = (norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).model()
 
-    jitter_model_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.jitter_model()).sum()
-    model_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.model()).sum()
-    calc_cov = lambda model, data, parameters: zdx.covariance_matrix(model, parameters, jitter_model_fn, data, shape_dict={'wavelengths': 1})
-    norm_calc_cov = lambda model, data, parameters: zdx.covariance_matrix(model, parameters, model_fn, data, shape_dict={'wavelengths': 1})
+    # posterior functions
+    def posterior_fn(model, data):
+        likelihood = jsp.stats.poisson.logpmf(
+            np.round(data), model.jitter_model()
+        ).sum()
+        prior = prior_fn(model)
+        return likelihood + prior
 
-    # models = {
-    #     'lin': lin_tel.set(
-    #         ["separation", "jitter_mag", "jitter_angle"],
-    #         [np.array(1.0 * lin_tel.separation), np.array(0.5 * lin_tel.jitter_mag), 5 + np.array(lin_tel.jitter_angle)],
-    #         ),
-    #     'shm': shm_tel.set(
-    #         ["separation", "jitter_mag", "jitter_angle"],
-    #         [np.array(1.0 * shm_tel.separation), np.array(0.5 * shm_tel.jitter_mag), 5 + np.array(shm_tel.jitter_angle)],
-    #         ),
-    #     "norm": norm_tel.set(
-    #         [
-    #             # "separation",
-    #             "Jitter.r",
-    #             "Jitter.shear",
-    #             "Jitter.phi",
-    #         ],
-    #         [
-    #             # np.array(1.05 * norm_tel.separation),
-    #             np.array(1.05 * norm_tel.Jitter.r), 
-    #             np.array(0.9),
-    #             5. + np.array(norm_tel.Jitter.phi),
-    #         ],
-    #     ),
-    #     }
+    norm_posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(
+        np.round(data), model.model()
+    ).sum() + prior_fn(model)
 
+    # functions for calculating covariance matrix (Fisher analysis)
+    calc_cov = lambda model, data, parameters: zdx.covariance_matrix(
+        model, parameters, posterior_fn, data, shape_dict={"wavelengths": 1}
+    )
+    norm_calc_cov = lambda model, data, parameters: zdx.covariance_matrix(
+        model, parameters, norm_posterior_fn, data, shape_dict={"wavelengths": 1}
+    )
+
+    # Wrapping everything up and returning
     models = {"lin": lin_tel, "shm": shm_tel, "norm": norm_tel}
-
-    loglike_fns = {'lin': jitter_model_fn, 'shm': jitter_model_fn, "norm": zdx.poiss_loglike}
+    loglike_fns = {"lin": posterior_fn, "shm": posterior_fn, "norm": norm_posterior_fn}
     datas = {
-        'lin': lin_data,
-        'shm': shm_data,
+        "lin": lin_data,
+        "shm": shm_data,
         "norm": norm_data,
-        }
+    }
 
     common_params = [
-        'separation',
-        'position_angle',
-        'x_position',
-        'y_position',
-        'log_flux',
-        'contrast',
-        'wavelengths',
-        'psf_pixel_scale',  
+        "separation",
+        "position_angle",
+        "x_position",
+        "y_position",
+        "log_flux",
+        "contrast",
+        "wavelengths",
+        "psf_pixel_scale",
     ]
 
     lin_params = [
-        'jitter_mag',
-        'jitter_angle',
-        'aperture.coefficients',
+        "jitter_mag",
+        "jitter_angle",
+        "aperture.coefficients",
     ]
 
     norm_params = [
-        'Jitter.r',
-        'Jitter.shear',
-        'Jitter.phi',
-        'aperture.coefficients',
+        "Jitter.r",
+        "Jitter.shear",
+        "Jitter.phi",
+        "aperture.coefficients",
     ]
 
     params = {
