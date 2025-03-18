@@ -151,7 +151,7 @@ def setup_jitter(
         position_angle=np.array(90.0),
         x_position=np.array(0.0),
         y_position=np.array(0.0),
-        log_flux=np.array(7.832),
+        log_flux=np.array(7.581),
         contrast=np.array(3.37),
     )
 
