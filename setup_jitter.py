@@ -111,7 +111,8 @@ def setup_jitter(
     angle=0.0,
     mag=0.5 * 0.375,
     shear=0.2,
-    r=0.25e-4,
+    r=25.0,
+    # r=0.25e-4,
     oversample=4,
     norm_osamp=6,
     det_pscale=0.375,
@@ -160,7 +161,8 @@ def setup_jitter(
     shm_det = lin_det
     norm_det = dLux.LayeredDetector(
         [
-            ("Jitter", dlT.GaussianJitter(**norm_params)),
+            ("Jitter", GaussianJitter(**norm_params)),
+            # ("Jitter", dlT.GaussianJitter(**norm_params)),
             ("Downsample", dLux.Downsample(norm_osamp)),
         ]
     )
@@ -183,17 +185,13 @@ def setup_jitter(
     ).jitter_model()
     norm_data = (norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).model()
 
-    # posterior functions
-    def posterior_fn(model, data):
-        likelihood = jsp.stats.poisson.logpmf(
-            np.round(data), model.jitter_model()
-        ).sum()
-        prior = prior_fn(model)
-        return likelihood + prior
+    posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(
+        np.round(data), model.jitter_model()
+    )
 
     norm_posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(
         np.round(data), model.model()
-    ).sum() + prior_fn(model)
+    )
 
     # functions for calculating covariance matrix (Fisher analysis)
     calc_cov = lambda model, data, parameters: zdx.covariance_matrix(
@@ -249,3 +247,58 @@ def setup_jitter(
     }
 
     return models, datas, params, loglike_fns, cov_fns
+
+
+import matplotlib.pyplot as plt
+from matplotlib import colormaps, colors
+
+
+def plot_losses(losses, start, stop=-1):
+    plt.figure(figsize=(16, 5))
+    plt.subplot(1, 2, 1)
+    plt.title("Full Loss")
+    plt.plot(losses)
+
+    if start >= len(losses):
+        start = 0
+    last_losses = losses[start:stop]
+    n = len(last_losses)
+    plt.subplot(1, 2, 2)
+    plt.title(f"Final {n} Losses")
+    plt.plot(np.arange(start, start + n), last_losses)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def summarise_fit(
+    model,
+    data,
+    args,
+    loglike_fn,
+):
+
+    inferno = colormaps["inferno"]
+    seismic = colormaps["seismic"]
+    inferno.set_bad("k", 0.5)
+    seismic.set_bad("k", 0.5)
+
+    sim = model.model()
+    residual = data - sim
+
+    loglike_im = loglike_fn(model, data, args)
+    final_loss = np.nanmean(-loglike_im)
+
+    plt.figure(figsize=(10, 4))
+    plt.subplot(1, 2, 1)
+    plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
+    plt.imshow(-loglike_im, cmap="viridis")
+    plt.colorbar()
+
+    plt.subplot(1, 2, 2)
+    plt.title("Mean noise normalised slope residual")
+    plt.imshow(residual, cmap=seismic, norm=colors.CenteredNorm())
+    plt.colorbar()
+
+    plt.tight_layout()
+    plt.show()
