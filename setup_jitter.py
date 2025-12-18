@@ -14,6 +14,23 @@ Source = lambda: dLux.BaseSource
 Optics = lambda: dLux.BaseOpticalSystem
 
 
+def fwhm_to_det(fwhm, shear):
+    return 1e6 * (1 - shear) ** 2 * (fwhm / 2.35482) ** 4
+
+
+def det_to_fwhm(det, shear):
+    return 2.35482 * ((det / 1e6) / (1 - shear) ** 2) ** 0.25
+
+
+def powspace(start, stop, power, num):
+    """
+    To generate r values at appropriate intervals.
+    """
+    start = np.power(start, 1 / float(power))
+    stop = np.power(stop, 1 / float(power))
+    return np.power(np.linspace(start, stop, num=num), power)
+
+
 class AlphaCenMeanWavel(AlphaCen):
     n_wavels: int
     mean_wavelength: float
@@ -110,9 +127,8 @@ class AlphaCenMeanWavel(AlphaCen):
 def setup_jitter(
     angle=0.0,
     mag=0.5 * 0.375,
-    shear=0.2,
-    r=25.0,
-    # r=0.25e-4,
+    shear=0.1,
+    r=fwhm_to_det(0.5 * 0.375, 0.1),
     oversample=4,
     norm_osamp=6,
     det_pscale=0.375,
@@ -137,6 +153,7 @@ def setup_jitter(
     radial_orders = [2, 3]
 
     # Creating common optical system
+    print("Building the models...")
     optics = dlT.TolimanOpticalSystem(
         oversample=oversample,
         psf_npixels=det_npixels,
@@ -161,8 +178,7 @@ def setup_jitter(
     shm_det = lin_det
     norm_det = dLux.LayeredDetector(
         [
-            ("Jitter", GaussianJitter(**norm_params)),
-            # ("Jitter", dlT.GaussianJitter(**norm_params)),
+            ("Jitter", dlT.GaussianJitter(**norm_params)),
             ("Downsample", dLux.Downsample(norm_osamp)),
         ]
     )
@@ -177,37 +193,80 @@ def setup_jitter(
     norm_tel = dlT.Toliman(source=src, optics=norm_optics).set("detector", norm_det)
 
     # creating simulated data at a high oversample
-    lin_data = (
-        lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-    ).jitter_model()
-    shm_data = (
-        shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-    ).jitter_model()
-    norm_data = (norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).model()
+    print("Creating simulated data grid...")
+    # dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    dlin_tel = lin_tel
+    lin_datas = []
 
-    posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(
+    # dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    dshm_tel = shm_tel
+    shm_datas = []
+
+    # dnorm_tel = norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    dnorm_tel = norm_tel
+    norm_datas = []
+
+    for ang in np.linspace(0, 90, 5):
+        for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
+            dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+            lin_data = {
+                "params": ["jitter_mag", "jitter_angle"],
+                "values": [mag, ang],
+                "data": dlin_tel.jitter_model(),
+            }
+            lin_datas.append(lin_data)
+
+            dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+            shm_data = {
+                "params": ["jitter_mag", "jitter_angle"],
+                "values": [mag, ang],
+                "data": dshm_tel.jitter_model(),
+            }
+            shm_datas.append(shm_data)
+
+        for r in np.linspace(
+            fwhm_to_det(0.375 / 5, 0.1), fwhm_to_det(0.375 / 1, 0.1), 5
+        ):
+            dnorm_tel = dnorm_tel.set("Jitter.r", r).set("Jitter.phi", ang)
+            norm_data = {
+                "params": ["Jitter.r", "Jitter.phi"],
+                "values": [r, ang],
+                "data": dnorm_tel.model(),
+            }
+            norm_datas.append(norm_data)
+
+    likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
         np.round(data), model.jitter_model()
+    ).sum()
+
+    posterior_fn = lambda model, data, args: likelihood_fn(model, data) + prior_fn(
+        model, args
     )
 
-    norm_posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(
+    norm_likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
         np.round(data), model.model()
-    )
+    ).sum()
 
-    # functions for calculating covariance matrix (Fisher analysis)
-    calc_cov = lambda model, data, parameters: zdx.covariance_matrix(
-        model, parameters, posterior_fn, data, shape_dict={"wavelengths": 1}
-    )
-    norm_calc_cov = lambda model, data, parameters: zdx.covariance_matrix(
-        model, parameters, norm_posterior_fn, data, shape_dict={"wavelengths": 1}
-    )
+    norm_posterior_fn = lambda model, data, args: norm_likelihood_fn(
+        model, data
+    ) + prior_fn(model, args)
 
     # Wrapping everything up and returning
     models = {"lin": lin_tel, "shm": shm_tel, "norm": norm_tel}
-    loglike_fns = {"lin": posterior_fn, "shm": posterior_fn, "norm": norm_posterior_fn}
+    loglike_fns = {
+        "lin": likelihood_fn,
+        "shm": likelihood_fn,
+        "norm": norm_likelihood_fn,
+    }
+    posterior_fns = {
+        "lin": posterior_fn,
+        "shm": posterior_fn,
+        "norm": norm_posterior_fn,
+    }
     datas = {
-        "lin": lin_data,
-        "shm": shm_data,
-        "norm": norm_data,
+        "lin": lin_datas,
+        "shm": shm_datas,
+        "norm": norm_datas,
     }
 
     common_params = [
@@ -217,8 +276,8 @@ def setup_jitter(
         "y_position",
         "log_flux",
         "contrast",
-        "wavelengths",
-        "psf_pixel_scale",
+        # "wavelengths",
+        # "psf_pixel_scale",
     ]
 
     lin_params = [
@@ -240,13 +299,7 @@ def setup_jitter(
         "norm": common_params + norm_params,
     }
 
-    cov_fns = {
-        "lin": zdx.filter_jit(calc_cov),
-        "shm": zdx.filter_jit(calc_cov),
-        "norm": zdx.filter_jit(norm_calc_cov),
-    }
-
-    return models, datas, params, loglike_fns, cov_fns
+    return models, datas, params, loglike_fns, posterior_fns
 
 
 import matplotlib.pyplot as plt
@@ -274,7 +327,6 @@ def plot_losses(losses, start, stop=-1):
 def summarise_fit(
     model,
     data,
-    args,
     loglike_fn,
 ):
 
@@ -286,7 +338,7 @@ def summarise_fit(
     sim = model.model()
     residual = data - sim
 
-    loglike_im = loglike_fn(model, data, args)
+    loglike_im = loglike_fn(model, data)
     final_loss = np.nanmean(-loglike_im)
 
     plt.figure(figsize=(10, 4))
