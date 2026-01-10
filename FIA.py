@@ -60,7 +60,198 @@ nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 # %% [markdown]
 # Setting up the model.
 
-from setup_jitter import setup_jitter
+import dLuxToliman as dlT
+import dLux
+from dLuxToliman import AlphaCen
+import jax
+from jax import numpy as np, Array
+import jax.scipy as jsp
+
+import zodiax as zdx
+from zodiax import filter_vmap
+from setup_jitter import fwhm_to_det, det_to_fwhm, powspace
+
+# from setup_jitter import setup_jitter
+def setup_jitter(
+    angle=0.0,
+    mag=0.5 * 0.375,
+    # shear=0.1,
+    # r=fwhm_to_det(0.5 * 0.375, 0.1),
+    oversample=4,
+    # norm_osamp=6,
+    det_pscale=0.375,
+    det_npixels=128,
+    # kernel_size=17,
+    n_psfs=5,
+    prior_fn=lambda model: np.array(0.0),
+):
+    lin_params = {
+        "jitter_mag": mag,
+        "jitter_angle": angle,
+        "jitter_shape": "linear",
+        "n_psfs": n_psfs,
+    }
+    shm_params = {
+        "jitter_mag": mag,
+        "jitter_angle": angle,
+        "jitter_shape": "shm",
+        "n_psfs": n_psfs,
+    }
+    # norm_params = {"r": r, "shear": shear, "phi": angle, "kernel_size": kernel_size}
+    radial_orders = [2, 3]
+
+    # Creating common optical system
+    print("Building the models...")
+    optics = dlT.TolimanOpticalSystem(
+        oversample=oversample,
+        psf_npixels=det_npixels,
+        radial_orders=radial_orders,
+        psf_pixel_scale=det_pscale,
+    )
+    optics = optics.divide("aperture.basis", 1e9)  # Set basis units to nanometers
+    # norm_optics = optics.set("oversample", norm_osamp)
+
+    # Creating common source
+    src = AlphaCen(
+        separation=np.array(10.0),
+        position_angle=np.array(90.0),
+        x_position=np.array(0.0),
+        y_position=np.array(0.0),
+        log_flux=np.array(7.581),
+        contrast=np.array(3.37),
+    )
+
+    # creating telescopes
+    lin_det = dLux.LayeredDetector([("Downsample", dLux.Downsample(oversample))])
+    shm_det = lin_det
+    # norm_det = dLux.LayeredDetector(
+    #     [
+    #         ("Jitter", dlT.GaussianJitter(**norm_params)),
+    #         ("Downsample", dLux.Downsample(norm_osamp)),
+    #     ]
+    # )
+
+    # creating models
+    lin_tel = dlT.JitteredToliman(source=src, optics=optics, **lin_params).set(
+        "detector", lin_det
+    )
+    shm_tel = dlT.JitteredToliman(source=src, optics=optics, **shm_params).set(
+        "detector", shm_det
+    )
+    # norm_tel = dlT.Toliman(source=src, optics=norm_optics).set("detector", norm_det)
+
+    # creating simulated data at a high oversample
+    print("Creating simulated data grid...")
+    # dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    dlin_tel = lin_tel
+    lin_datas = []
+
+    # dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    dshm_tel = shm_tel
+    shm_datas = []
+
+    # dnorm_tel = norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    # dnorm_tel = norm_tel
+    # norm_datas = []
+
+    for ang in np.linspace(0, 90, 5):
+        for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
+            dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+            lin_data = {
+                "params": ["jitter_mag", "jitter_angle"],
+                "values": [mag, ang],
+                "data": dlin_tel.jitter_model(),
+            }
+            lin_datas.append(lin_data)
+
+            dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+            shm_data = {
+                "params": ["jitter_mag", "jitter_angle"],
+                "values": [mag, ang],
+                "data": dshm_tel.jitter_model(),
+            }
+            shm_datas.append(shm_data)
+
+        # for r in np.linspace(
+        #     fwhm_to_det(0.375 / 5, 0.1), fwhm_to_det(0.375 / 1, 0.1), 5
+        # ):
+        #     dnorm_tel = dnorm_tel.set("Jitter.r", r).set("Jitter.phi", ang)
+        #     norm_data = {
+        #         "params": ["Jitter.r", "Jitter.phi"],
+        #         "values": [r, ang],
+        #         "data": dnorm_tel.model(),
+        #     }
+        #     norm_datas.append(norm_data)
+
+
+    # NOTE make sure to ROUND data before passing here.
+    likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
+        data, model.jitter_model()
+    ).sum()
+
+    posterior_fn = lambda model, data, args: likelihood_fn(model, data) + prior_fn(
+        model, args
+    )
+
+    # norm_likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
+    #     data, model.model()
+    # ).sum()
+
+    # norm_posterior_fn = lambda model, data, args: norm_likelihood_fn(
+    #     model, data
+    # ) + prior_fn(model, args)
+
+    # Wrapping everything up and returning
+    models = {"lin": lin_tel, "shm": shm_tel, 
+        # "norm": norm_tel,
+        }
+    loglike_fns = {
+        "lin": likelihood_fn,
+        "shm": likelihood_fn,
+        # "norm": norm_likelihood_fn,
+    }
+    posterior_fns = {
+        "lin": posterior_fn,
+        "shm": posterior_fn,
+        # "norm": norm_posterior_fn,
+    }
+    datas = {
+        "lin": lin_datas,
+        "shm": shm_datas,
+        # "norm": norm_datas,
+    }
+
+    common_params = [
+        "separation",
+        "position_angle",
+        "x_position",
+        "y_position",
+        "log_flux",
+        "contrast",
+        # "wavelengths",
+        # "psf_pixel_scale",
+    ]
+
+    lin_params = [
+        "jitter_mag",
+        "jitter_angle",
+        "aperture.coefficients",
+    ]
+
+    # norm_params = [
+    #     "Jitter.r",
+    #     "Jitter.shear",
+    #     "Jitter.phi",
+    #     "aperture.coefficients",
+    # ]
+
+    params = {
+        "lin": common_params + lin_params,
+        "shm": common_params + lin_params,
+        # "norm": common_params + norm_params,
+    }
+
+    return models, datas, params, loglike_fns, posterior_fns
 
 models, datas, params, loglike_fns, posterior_fns = setup_jitter()
 
@@ -260,5 +451,5 @@ cbar.ax.tick_params(direction="out")
 cbar.ax.minorticks_off()
 
 plt.savefig(nt_files_path + "paper_figs/lin_shm_sweep.png", bbox_inches="tight", dpi=500)
-plt.savefig(nt_files_path + "paper_figs/lin_shm_sweep.pdf", bbox_inches="tight", dpi=500)
+# plt.savefig(nt_files_path + "paper_figs/lin_shm_sweep.pdf", bbox_inches="tight", dpi=500)
 plt.close()
