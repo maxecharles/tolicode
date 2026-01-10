@@ -8,17 +8,20 @@
 # NOTE POSSIBLE LACK OF OVERSAMPLING CAUSING THE NUMBERICAL EFFECTS
 
 # %%
-import os
-
 import jax
+# Enable 64bit precision (note this must be run in the first cell of the notebook)
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_platform_name", "gpu")
+
+print(jax.devices())
+print(jax.config.jax_enable_x64)
+
+import os
 from jax import numpy as np, random as jr, Array
 import zodiax as zdx
 import dLux as dl
 import dLuxToliman as dlT
 
-# Enable 64bit precision (note this must be run in the first cell of the notebook)
-# jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_platform_name", "gpu")
 
 import optax
 from tqdm import tqdm
@@ -57,55 +60,9 @@ nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 # %% [markdown]
 # Setting up the model.
 
-# %% [markdown]
-# ## Priors
-
-# %%
-from jax.scipy.stats import norm, beta
-
-
-def weibull_logpdf(x, k=1.5, lam=35):
-    x = np.asarray(x)
-    return np.log(k) - k * np.log(lam) + (k - 1) * np.log(x) - (x / lam) ** k
-
-
-
-# %%
 from setup_jitter import setup_jitter
 
-
-def prior_fn(model, args={}):
-
-    prior = 0
-
-    if isinstance(model, dlT.JitteredToliman):
-        # jitter angle phi
-        angle = model.get("jitter_angle")
-    elif isinstance(model, dlT.Toliman):
-        # determinant r
-        det = model.get("Jitter.r")
-        prior += weibull_logpdf(det)
-
-        # shear
-        shear = model.get("Jitter.shear")
-        prior += beta.logpdf(shear, a=1.1, b=1.1)
-
-        # jitter angle phi
-        angle = model.get("Jitter.phi")
-    prior += norm.logpdf(x=angle, loc=args["angle"], scale=1.0)
-
-    # aberration coefficients Z
-    aberrations = model.get("aperture.coefficients")
-    prior += norm.logpdf(x=aberrations, loc=0.0, scale=4.0).sum()
-
-    return prior
-
-
-models, datas, params, loglike_fns, posterior_fns = setup_jitter(
-    oversample=4,
-    n_psfs=5,
-    prior_fn=prior_fn,
-)
+models, datas, params, loglike_fns, posterior_fns = setup_jitter()
 
 # %% [markdown]
 # ## Linear & SHM Models: FIA
@@ -159,7 +116,7 @@ params = [
     "y_position",
     "log_flux",
     "contrast",
-    "jitter_mag",
+    # "jitter_mag",
     "jitter_angle",
     "aperture.coefficients",
     # # 'wavelengths',
@@ -169,7 +126,7 @@ params = [
 test_mags = np.linspace(1e-4, 2 * 0.375, 30)
 test_angs = np.linspace(0, 90, 7)
 
-# test_mags = np.linspace(1e-4, 2 * 0.375, 10)
+# test_mags = np.linspace(1e-4, 2 * 0.375 /3, 10)
 # test_angs = np.linspace(0, 90, 3)
 
 # %%
@@ -185,6 +142,7 @@ if run_compute:
     np.save(nt_files_path + "seps/seps_lin.npy", seps_lin)
 
 # %%
+run_compute=False
 if run_compute:
     seps_shm = fisher_sweep(
         models["shm"],
@@ -234,7 +192,7 @@ fig, ax = plt.subplots(1, 2, figsize=(7, 2.5), sharey=True, layout="compressed")
 for i, seps in enumerate(
     [
         seps_lin,
-        seps_shm,
+        # seps_shm,
     ]
 ):
 

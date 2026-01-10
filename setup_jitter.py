@@ -235,8 +235,10 @@ def setup_jitter(
             }
             norm_datas.append(norm_data)
 
+
+    # NOTE make sure to ROUND data before passing here.
     likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
-        np.round(data), model.jitter_model()
+        data, model.jitter_model()
     ).sum()
 
     posterior_fn = lambda model, data, args: likelihood_fn(model, data) + prior_fn(
@@ -244,7 +246,7 @@ def setup_jitter(
     )
 
     norm_likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
-        np.round(data), model.model()
+        data, model.model()
     ).sum()
 
     norm_posterior_fn = lambda model, data, args: norm_likelihood_fn(
