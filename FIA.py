@@ -140,37 +140,37 @@ def setup_jitter(
     )
     # norm_tel = dlT.Toliman(source=src, optics=norm_optics).set("detector", norm_det)
 
-    # creating simulated data at a high oversample
-    print("Creating simulated data grid...")
-    # dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-    dlin_tel = lin_tel
-    lin_datas = []
+    # # creating simulated data at a high oversample
+    # print("Creating simulated data grid...")
+    # # dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    # dlin_tel = lin_tel
+    # lin_datas = []
 
-    # dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-    dshm_tel = shm_tel
-    shm_datas = []
+    # # dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+    # dshm_tel = shm_tel
+    # shm_datas = []
 
     # dnorm_tel = norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
     # dnorm_tel = norm_tel
     # norm_datas = []
 
-    for ang in np.linspace(0, 90, 5):
-        for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
-            dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
-            lin_data = {
-                "params": ["jitter_mag", "jitter_angle"],
-                "values": [mag, ang],
-                "data": dlin_tel.jitter_model(),
-            }
-            lin_datas.append(lin_data)
+    # for ang in np.linspace(0, 90, 5):
+    #     for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
+    #         dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+    #         lin_data = {
+    #             "params": ["jitter_mag", "jitter_angle"],
+    #             "values": [mag, ang],
+    #             "data": dlin_tel.jitter_model(),
+    #         }
+    #         lin_datas.append(lin_data)
 
-            dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
-            shm_data = {
-                "params": ["jitter_mag", "jitter_angle"],
-                "values": [mag, ang],
-                "data": dshm_tel.jitter_model(),
-            }
-            shm_datas.append(shm_data)
+    #         dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+    #         shm_data = {
+    #             "params": ["jitter_mag", "jitter_angle"],
+    #             "values": [mag, ang],
+    #             "data": dshm_tel.jitter_model(),
+    #         }
+    #         shm_datas.append(shm_data)
 
         # for r in np.linspace(
         #     fwhm_to_det(0.375 / 5, 0.1), fwhm_to_det(0.375 / 1, 0.1), 5
@@ -206,54 +206,25 @@ def setup_jitter(
         # "norm": norm_tel,
         }
     loglike_fns = {
-        "lin": likelihood_fn,
-        "shm": likelihood_fn,
+        "lin": zdx.filter_jit(likelihood_fn),
+        "shm": zdx.filter_jit(likelihood_fn),
         # "norm": norm_likelihood_fn,
     }
-    posterior_fns = {
-        "lin": posterior_fn,
-        "shm": posterior_fn,
-        # "norm": norm_posterior_fn,
-    }
-    datas = {
-        "lin": lin_datas,
-        "shm": shm_datas,
-        # "norm": norm_datas,
-    }
+    # posterior_fns = {
+    #     "lin": zdx.filter_jit(posterior_fn),
+    #     "shm": zdx.filter_jit(posterior_fn),
+    #     # "norm": norm_posterior_fn,
+    # }
+    # datas = {
+    #     "lin": lin_datas,
+    #     "shm": shm_datas,
+    #     # "norm": norm_datas,
+    # }
 
-    common_params = [
-        "separation",
-        "position_angle",
-        "x_position",
-        "y_position",
-        "log_flux",
-        "contrast",
-        # "wavelengths",
-        # "psf_pixel_scale",
-    ]
 
-    lin_params = [
-        "jitter_mag",
-        "jitter_angle",
-        "aperture.coefficients",
-    ]
+    return models, loglike_fns
 
-    # norm_params = [
-    #     "Jitter.r",
-    #     "Jitter.shear",
-    #     "Jitter.phi",
-    #     "aperture.coefficients",
-    # ]
-
-    params = {
-        "lin": common_params + lin_params,
-        "shm": common_params + lin_params,
-        # "norm": common_params + norm_params,
-    }
-
-    return models, datas, params, loglike_fns, posterior_fns
-
-models, datas, params, loglike_fns, posterior_fns = setup_jitter()
+models, loglike_fns = setup_jitter()
 
 # %% [markdown]
 # ## Linear & SHM Models: FIA
@@ -261,6 +232,9 @@ models, datas, params, loglike_fns, posterior_fns = setup_jitter()
 # The Fisher Information analysis for the Linear and SHM jitter models, and their respective plots.
 
 # %%
+
+cov_mat = zdx.filter_jit(zdx.covariance_matrix)
+
 def fisher_sweep(
     tel,
     ll_fn,
@@ -282,8 +256,8 @@ def fisher_sweep(
             data = model.jitter_model()
 
             # calculate covariance matrix
-            cov = zdx.covariance_matrix(
-                tel, params, ll_fn, np.round(data), save_memory=save_memory
+            cov = cov_mat(
+                model, params, ll_fn, np.round(data), save_memory=save_memory
             )
 
             # read separation from covariance matrix
@@ -307,7 +281,7 @@ params = [
     "y_position",
     "log_flux",
     "contrast",
-    # "jitter_mag",
+    "jitter_mag",
     "jitter_angle",
     "aperture.coefficients",
     # # 'wavelengths',
@@ -333,7 +307,7 @@ if run_compute:
     np.save(nt_files_path + "seps/seps_lin.npy", seps_lin)
 
 # %%
-run_compute=False
+
 if run_compute:
     seps_shm = fisher_sweep(
         models["shm"],
@@ -349,11 +323,11 @@ if run_compute:
 if run_compute:
     stable_model = models["lin"].set("jitter_mag", np.array(0.0))
     stable_data = stable_model.model()
-    stable_cov = zdx.covariance_matrix(
+    stable_cov = cov_mat(
         stable_model,
         params,
         loglike_fns["lin"],
-        stable_data,
+        np.round(stable_data),
         save_memory=save_ram,
     )
     baseline = np.sqrt(np.abs(stable_cov[0, 0]))

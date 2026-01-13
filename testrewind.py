@@ -1,48 +1,64 @@
+# %% [markdown]
+# # Fisher Information Analysis and Model Cross-Fitting
+# 
+# Code used to run analysis and generate plots for "Mitigating effects of jitter through differentiable
+# forwards-modeling for the TOLIMAN space telescope".
+
+
+# NOTE POSSIBLE LACK OF OVERSAMPLING CAUSING THE NUMBERICAL EFFECTS
+
 # %%
-
-# NOTE: SHAPE_DICT SEEMS TO CAUSE A MASSIVE TIME DIFFERENCE!!!
-
-import os
-# os.chdir('/Users/mcha5804/Library/CloudStorage/OneDrive-TheUniversityofSydney(Students)/PyCharm/toliman-phd')
-# os.chdir('/Users/mc/Library/CloudStorage/OneDrive-TheUniversityofSydney(Students)/PyCharm/toliman-phd')
-
-import dLux as dl
-
-import jax.scipy as jsp
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-import dLuxToliman as dlT
-import zodiax as zdx
-import optax
-from jax import numpy as np
-from jax import Array
 import jax
-from tqdm.notebook import tqdm
-
-# import ehtplot
-import scienceplots
-import cmasher as cmr
-plt.style.use(["science", "no-latex"])
-
-# %matplotlib inline
-plt.rcParams['image.cmap'] = 'magma'
-# plt.rcParams["font.family"] = "monospace"
-plt.rcParams["image.origin"] = 'lower'
-plt.rcParams['figure.dpi'] = 300
-# plt.rcParams['xtick.direction'] = 'out'
-# plt.rcParams['ytick.direction'] = 'out'
-
 # Enable 64bit precision (note this must be run in the first cell of the notebook)
 jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_platform_name", "gpu")
 
-ito_seven = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#56B4E9", "#E69F00", "#F0E442"]
+print(jax.devices())
+print(jax.config.jax_enable_x64)
+
+import os
+from jax import numpy as np, random as jr, Array
+import zodiax as zdx
+import dLux as dl
+import dLuxToliman as dlT
+
+
+import optax
+from tqdm import tqdm
+import random
+from datetime import datetime
+
+# plotting
+import matplotlib as mpl
+from matplotlib import pyplot as plt
+import scienceplots
+import cmasher as cmr
+
+plt.style.use(["science", "no-latex"])
+plt.rcParams["image.origin"] = "lower"
+plt.rcParams["figure.dpi"] = 300
+
+# Colour schemes
+ito_seven = [
+    "#0072B2",
+    "#D55E00",
+    "#009E73",
+    "#CC79A7",
+    "#56B4E9",
+    "#E69F00",
+    "#F0E442",
+]
 contrast_three = ["#004488", "#BB5566", "#DDAA33"]
 
-# %% [markdown]
-# # Creating a jittered instrument
-# Using new class `dlT.JitteredToliman` 
-
 # %%
+# Set to True if you want to run the computation
+# Set to False if you want to load the pre-calculated results from disk
+run_compute = True
+save_ram = False
+nt_files_path = "/fred/oz440/max/code/tolicode/files/"
+
+# %% [markdown]
+# Setting up the model.
 
 # jax
 import dLuxToliman as dlT
@@ -54,6 +70,7 @@ import jax.scipy as jsp
 
 import zodiax as zdx
 from zodiax import filter_vmap
+from setup_jitter import fwhm_to_det, det_to_fwhm, powspace
 
 # from setup_jitter import AlphaCenMeanWavel
 
@@ -127,19 +144,31 @@ def setup_jitter(
 
 
     # creating simulated data
-    lin_data = (lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).jitter_model()
-    shm_data = (shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).jitter_model()
+    # lin_data = (lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).jitter_model()
+    # shm_data = (shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).jitter_model()
+
+    # lin_data = lin_tel.jitter_model()
+    # shm_data = shm_tel.jitter_model()
     # norm_data = (norm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])).model()
     # setting norm_tel to a reasonable oversample
     # norm_tel = norm_tel.set(['oversample', "Downsample.kernel_size"], 2*[oversample])
 
     # jitter_posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.jitter_model()).sum() + prior_fn(model)
-    def posterior_fn(model, data):
-        likelihood = jsp.stats.poisson.logpmf(np.round(data), model.jitter_model()).sum()
-        prior = prior_fn(model)
-        # print(likelihood, prior)
-        return likelihood + prior
+    # def posterior_fn(model, data):
+    #     likelihood = jsp.stats.poisson.logpmf(np.round(data), model.jitter_model()).sum()
+    #     prior = prior_fn(model)
+    #     # print(likelihood, prior)
+    #     return likelihood + prior
     
+    # NOTE make sure to ROUND data before passing here.
+    likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(
+        data, model.jitter_model()
+    ).sum()
+
+    posterior_fn = lambda model, data, args: likelihood_fn(model, data) + prior_fn(
+        model, args
+    )
+
     # # model_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.model()).sum()
     # norm_posterior_fn = lambda model, data: jsp.stats.poisson.logpmf(np.round(data), model.model()).sum() + prior_fn(model)
     
@@ -149,52 +178,20 @@ def setup_jitter(
     models = {"lin": lin_tel, "shm": shm_tel, 
             #   "norm": norm_tel,
               }
-    loglike_fns = {'lin': posterior_fn, 'shm': posterior_fn, 
+    loglike_fns = {
+        # 'lin': zdx.filter_jit(posterior_fn), 
+        # 'shm': zdx.filter_jit(posterior_fn), 
+        'lin': zdx.filter_jit(likelihood_fn), 
+        'shm': zdx.filter_jit(likelihood_fn), 
                 #    "norm": norm_posterior_fn,
-                   }
-    datas = {
-        'lin': lin_data,
-        'shm': shm_data,
-        # "norm": norm_data,
         }
+    # datas = {
+    #     'lin': lin_data,
+    #     'shm': shm_data,
+    #     # "norm": norm_data,
+    #     }
 
-    common_params = [
-        'separation',
-        'position_angle',
-        'x_position',
-        'y_position',
-        'log_flux',
-        'contrast',
-        # 'wavelengths',
-        # 'psf_pixel_scale',  
-    ]
-
-    lin_params = [
-        'jitter_mag',
-        'jitter_angle',
-        'aperture.coefficients',
-    ]
-
-    # norm_params = [
-    #     'Jitter.r',
-    #     'Jitter.shear',
-    #     'Jitter.phi',
-    #     'aperture.coefficients',
-    # ]
-
-    params = {
-        "lin": common_params + lin_params,
-        "shm": common_params + lin_params,
-        # "norm": common_params + norm_params,
-    }
-
-    # cov_fns = {
-    #     "lin": zdx.filter_jit(calc_cov),
-    #     "shm": zdx.filter_jit(calc_cov),
-    #     # "norm": zdx.filter_jit(norm_calc_cov),
-    # }
-
-    return models, datas, params, loglike_fns
+    return models, loglike_fns
 
 # %%
 # from setup_jitter import setup_jitter
@@ -214,7 +211,7 @@ def setup_jitter(
 # def prior_fn(model):
 #     return wavel_prior(model) + plate_scale_prior(model)
 
-models, datas, params, loglike_fns = setup_jitter()
+models, loglike_fns = setup_jitter()
 
 # print(models['lin'].wavelengths.mean() == true_eff_wavel)
 
@@ -223,12 +220,15 @@ models, datas, params, loglike_fns = setup_jitter()
 # # Fisher Sweeping
 
 # %%
+cov_mat = zdx.filter_jit(zdx.covariance_matrix)
+
 def fisher_sweep(
         tel,
         ll_fn,
         params,
         mags=np.linspace(1e-4, 2 * 0.375, 10),
         angs=np.linspace(0, 90, 3),
+        save_memory=False,
     ):
 
     seps = []
@@ -243,12 +243,14 @@ def fisher_sweep(
             data = model.jitter_model()
 
             # calculate covariance matrix
+            # cov = cov_fn(model, data, params)
             # cov = cov_fn(model, np.round(data), params)
-            cov = zdx.covariance_matrix(
+            cov = cov_mat(
                 model,
                 params,
                 ll_fn,
-                data,
+                np.round(data),
+                save_memory=save_memory,
                 # shape_dict={'wavelengths': 1},
             )
 
@@ -327,15 +329,12 @@ test_angs = np.linspace(0, 90, 7)
 
 # %%
 seps_lin = fisher_sweep(
-    # models["lin"].set("detector", None),
-    # models["lin"].set("detector", None).jitter_model(),
-    # models["lin"].set(["Downsample.kernel_size", "oversample"], [3, 3]),
     models["lin"],
     loglike_fns["lin"],
     params,
-    # mags=np.linspace(1e-4, 2 * 0.375, 10)
     mags=test_mags,
     angs=test_angs,
+    save_memory=save_ram,
     )
 
 
