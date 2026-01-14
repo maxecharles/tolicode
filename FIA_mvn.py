@@ -1,117 +1,108 @@
-# %% [markdown]
-# # Fisher Information Analysis and Model Cross-Fitting
-# 
-# Code used to run analysis and generate plots for "Mitigating effects of jitter through differentiable
-# forwards-modeling for the TOLIMAN space telescope".
-
-# %%
-import os
+"""
+SCRIPT TO RUN FISHER INFORMATION ANALYSIS ON MULTIVARIATE NORMAL JITTER MODEL
+"""
 
 import jax
-from jax import numpy as np, random as jr, Array
-import zodiax as zdx
-import dLux as dl
-import dLuxToliman as dlT
 
 # Enable 64bit precision (note this must be run in the first cell of the notebook)
-# jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platform_name", "gpu")
 
-import optax
+print(jax.devices())
+print(jax.config.jax_enable_x64)
+
+from jax import numpy as np, scipy as jsp
+import zodiax as zdx
+import dLuxToliman as dlT
+import dLux
 from tqdm import tqdm
-import random
-from datetime import datetime
 
-# plotting
-import matplotlib as mpl
-from matplotlib import pyplot as plt
-import scienceplots
-import cmasher as cmr
-
-plt.style.use(["science", "no-latex"])
-plt.rcParams["image.origin"] = "lower"
-plt.rcParams["figure.dpi"] = 300
-
-# Colour schemes
-ito_seven = [
-    "#0072B2",
-    "#D55E00",
-    "#009E73",
-    "#CC79A7",
-    "#56B4E9",
-    "#E69F00",
-    "#F0E442",
-]
-contrast_three = ["#004488", "#BB5566", "#DDAA33"]
-
-# %%
-# Set to True if you want to run the computation
-# Set to False if you want to load the pre-calculated results from disk
-run_compute = True
 save_ram = False
 nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 
-# %% [markdown]
-# Setting up the model.
 
-# %% [markdown]
-# ## Priors
-
-# %%
-from jax.scipy.stats import norm, beta
+def fwhm_to_det(fwhm, shear):
+    return 1e6 * (1 - shear) ** 2 * (fwhm / 2.35482) ** 4
 
 
-def weibull_logpdf(x, k=1.5, lam=35):
-    x = np.asarray(x)
-    return np.log(k) - k * np.log(lam) + (k - 1) * np.log(x) - (x / lam) ** k
+def det_to_fwhm(det, shear):
+    return 2.35482 * ((det / 1e6) / (1 - shear) ** 2) ** 0.25
 
 
-
-# %%
-from setup_jitter import setup_jitter, powspace, fwhm_to_det, det_to_fwhm
-
-
-def prior_fn(model, args={}):
-
-    prior = 0
-
-    if isinstance(model, dlT.JitteredToliman):
-        # jitter angle phi
-        angle = model.get("jitter_angle")
-    elif isinstance(model, dlT.Toliman):
-        # determinant r
-        det = model.get("Jitter.r")
-        prior += weibull_logpdf(det)
-
-        # shear
-        shear = model.get("Jitter.shear")
-        prior += beta.logpdf(shear, a=1.1, b=1.1)
-
-        # jitter angle phi
-        angle = model.get("Jitter.phi")
-    prior += norm.logpdf(x=angle, loc=args["angle"], scale=1.0)
-
-    # aberration coefficients Z
-    aberrations = model.get("aperture.coefficients")
-    prior += norm.logpdf(x=aberrations, loc=0.0, scale=4.0).sum()
-
-    return prior
+def powspace(start, stop, power, num):
+    """
+    To generate r values at appropriate intervals.
+    """
+    start = np.power(start, 1 / float(power))
+    stop = np.power(stop, 1 / float(power))
+    return np.power(np.linspace(start, stop, num=num), power)
 
 
-models, datas, params, loglike_fns, posterior_fns = setup_jitter(
-    oversample=4,
-    n_psfs=5,
-    prior_fn=prior_fn,
+################## MODEL SETUP ##################
+
+angle = 0.0  # initialise at 0 degrees, but this doesn't matter
+r = fwhm_to_det(0.5 * 0.375, 0.1)  # initialise at half a pixel, but this doesn't matter
+shear = 0.1
+kernel_size = 17
+oversample = 4
+det_pscale = 0.375  # arcsec/pixel
+det_npixels = 128
+n_psfs = 5
+
+mvn_params = {
+    "r": r,
+    "shear": shear,
+    "phi": angle,
+    "kernel_size": kernel_size,
+}
+
+radial_orders = [2, 3]
+
+# Creating common optical system
+print("Building the models...")
+optics = dlT.TolimanOpticalSystem(
+    oversample=oversample,
+    psf_npixels=det_npixels,
+    radial_orders=radial_orders,
+    psf_pixel_scale=det_pscale,
+)
+optics = optics.divide("aperture.basis", 1e9)  # Set basis units to nanometers
+
+# Creating common source
+src = dlT.AlphaCen(
+    separation=np.array(10.0),
+    position_angle=np.array(90.0),
+    x_position=np.array(0.0),
+    y_position=np.array(0.0),
+    log_flux=np.array(7.581),
+    contrast=np.array(3.37),
 )
 
-# %% [markdown]
-# ## Linear & SHM Models: FIA
-# 
-# The Fisher Information analysis for the Linear and SHM jitter models, and their respective plots.
+# creating telescope
+det = dLux.LayeredDetector(
+    [
+        ("Jitter", dlT.GaussianJitter(**mvn_params)),
+        ("Downsample", dLux.Downsample(oversample)),
+    ]
+)
+
+# creating models
+tel = dlT.Toliman(source=src, optics=optics).set("detector", det)
 
 
-# Marginal params for normal model
-norm_params = [
+# NOTE make sure to ROUND data before passing here.
+@zdx.filter_jit
+def likelihood_fn(model, data):
+    ll = jsp.stats.poisson.logpmf(data, model.model())
+    return ll.sum()
+
+
+cov_mat = zdx.filter_jit(zdx.covariance_matrix)
+
+
+# Marginal parameters
+# Ignore covariant wavelengths and pixel scale for now
+params = [
     "separation",
     "position_angle",
     "x_position",
@@ -122,110 +113,108 @@ norm_params = [
     "Jitter.shear",
     "Jitter.phi",
     "aperture.coefficients",
-    # 'wavelengths',
-    # 'psf_pixel_scale',
+    # # 'wavelengths',
+    # # 'psf_pixel_scale',
 ]
 
-det_pscale = models["norm"].psf_pixel_scale
-oversample = models["norm"].oversample
-kernel_size = models["norm"].Jitter.kernel_size
+# Points to test
+# test_phis = np.linspace(0, 90, 3)
+test_phis = np.linspace(0, 90, 7)
+test_shears = np.array([0, 0.3])
+test_shears = np.array([0, 0.3, 0.7])
+test_rs = powspace(
+    fwhm_to_det(1e-2 * det_pscale, test_shears[0]),
+    fwhm_to_det(1.01 * det_pscale, test_shears[0]),
+    2,
+    60,
+)
 
-phis = np.linspace(0, 90, 7)
-shears = np.array([0, 0.3, 0.7])
-rs = powspace(1e-1, fwhm_to_det(1.01 * det_pscale, shears[0]), 2, 5)
-# rs = powspace(1e-7, fwhm_to_det(1.01 * det_pscale, shears[0]), 2, 30)
+# saving test points
+np.save(nt_files_path + "results/lin/test_rs.npy", test_rs)
+np.save(nt_files_path + "results/shm/test_shears.npy", test_shears)
+np.save(nt_files_path + "results/lin/test_phis.npy", test_phis)
 
-if run_compute:
+################## CALCULATIONS ##################
 
-    seps = []
-    fwhms = []
-    kernels = []
+seps = []
+fwhms = []
+kernels = []
 
-    for shear_idx, shear in enumerate(shears):
-        model = models["norm"].set("detector.Jitter.shear", shear)
+for shear_idx, shear in enumerate(test_shears):
+    model = tel.set("detector.Jitter.shear", shear)
 
-        for r_idx, r in tqdm(enumerate(rs), total=len(rs)):
-            fwhm = det_to_fwhm(r, shear)
-            fwhms.append(fwhm)
-            model = model.set("detector.Jitter.r", r)
+    for r_idx, r in tqdm(enumerate(test_rs), total=len(test_rs)):
+        fwhm = det_to_fwhm(r, shear)
+        fwhms.append(fwhm)
+        model = model.set("detector.Jitter.r", r)
 
-            for phi_idx, phi in enumerate(phis):
+        for phi_idx, phi in enumerate(test_phis):
 
-                # skipping over different angles for shear = 0 as symmetric
-                if shear_idx == 0 and phi_idx != 0:
-                    sep = np.nan
+            # skipping over different angles for shear = 0 as symmetric
+            if shear_idx == 0 and phi_idx != 0:
+                sep = np.nan
 
-                else:
-                    model = model.set("detector.Jitter.phi", phi)
-                    data = model.model()
+            else:
+                model = model.set("detector.Jitter.phi", phi)
+                data = model.model()
 
-                    # cov = cov_fns["norm"](model, np.round(data), norm_params)
-                    cov = zdx.covariance_matrix(
-                        model, norm_params, loglike_fns["norm"], data, save_memory=save_ram
-                    )
-                    sep = np.sqrt(np.abs(cov[0, 0]))
-                    if phi_idx == 0:
-                        if r == rs.max():
-                            kernels.append(
-                                model.Jitter.generate_kernel(det_pscale / oversample)
-                            )
+                cov = cov_mat(
+                    model,
+                    params,
+                    likelihood_fn,
+                    np.round(data),
+                    save_memory=False,
+                )
 
-                seps.append(sep)
+                sep = np.sqrt(np.abs(cov[0, 0]))
+                if phi_idx == 0:
+                    if r == test_rs.max():
+                        kernels.append(
+                            model.Jitter.generate_kernel(det_pscale / oversample)
+                        )
 
-    seps = np.array(seps).reshape(len(shears), len(rs), len(phis))
-    fwhms = np.array(fwhms).reshape(len(shears), len(rs))
+            seps.append(sep)
 
-    # saving
-    np.save(nt_files_path + "seps/seps_norm.npy", seps)
-    np.save(nt_files_path + "seps/kernels.npy", kernels)
-    np.save(nt_files_path + "seps/fwhms.npy", fwhms)
+seps = np.array(seps).reshape(len(test_shears), len(test_rs), len(test_phis))
+fwhms = np.array(fwhms).reshape(len(test_shears), len(test_rs))
+
+# saving
+np.save(nt_files_path + "results/mvn/fia_seps.npy", seps)
+np.save(nt_files_path + "results/mvn/kernels.npy", kernels)
+np.save(nt_files_path + "results/mvn/fwhms.npy", fwhms)
 
 
-if run_compute:
-    stable_model = models["norm"].set("Jitter.r", np.array(1e-8))
-    stable_data = stable_model.model()
-    stable_cov = zdx.covariance_matrix(
-        stable_model,
-        norm_params,
-        loglike_fns["norm"],
-        np.round(stable_data),
-        save_memory=save_ram,
-    )
-    baseline = np.sqrt(np.abs(stable_cov[0, 0]))
-    print(f"Baseline with no wavelengths or pixel scale: {1000 * baseline} mas")
-    np.save(nt_files_path +"seps/baseline_mvn.npy", 1000 * baseline)
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import cmasher as cmr
 
-seps_norm = np.load(nt_files_path + "seps/seps_norm.npy")
-kernels = np.load(nt_files_path + "seps/kernels.npy")
-fwhms = np.load(nt_files_path + "seps/fwhms.npy")
-baseline = np.load(nt_files_path + "seps/baseline_mvn.npy")
-
+baseline = None
 
 cmap = mpl.colormaps["cmr.gem"]
 sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(vmin=0, vmax=90))
-colors = cmap(phis / 90)
+colors = cmap(test_phis / 90)
 
 fig, axes = plt.subplots(
-    len(shears), 2, figsize=(9, 7), sharey="col", layout="compressed"
+    len(test_shears), 2, figsize=(9, 7), sharey="col", layout="compressed"
 )
 
-for i, shear in enumerate(shears):
+for i, shear in enumerate(test_shears):
     ax, axe = axes[i]
     ax.ticklabel_format(axis="x", style="sci", scilimits=(0, 2))
     ax.tick_params(axis="x", which="both", top=False)
 
-    for sep, phi, c in zip(seps_norm[i].T, phis, colors):
+    for sep, phi, c in zip(seps[i].T, test_phis, colors):
         if shear == 0:
             label = None
             c = "k"
         else:
             label = label = r"$\phi\,=$" + f" {phi:.0f}"
-        ax.plot(rs, 1000 * sep, label=label, color=c, marker=None, linewidth=2.75)
+        ax.plot(test_rs, 1000 * sep, label=label, color=c, marker=None, linewidth=2.75)
     ax.set(
         xlabel=r"det$\,\Sigma$ [arcsec$^{4}$]",
         ylabel=r"Separation Error $\sigma$ [mas]",
         # ylim=(baseline - 0.01, 0.8),
-        xlim=(0, rs.max()),
+        xlim=(0, test_rs.max()),
     )
 
     ax.text(
@@ -238,15 +227,15 @@ for i, shear in enumerate(shears):
         va="top",
         bbox=dict(facecolor="white", edgecolor="black", boxstyle=None),
     )
-    ax.axhline(
-        baseline, linestyle="--", c="k", alpha=0.4, label="No Jitter", linewidth=1
-    )
+    # ax.axhline(
+    #     baseline, linestyle="--", c="k", alpha=0.4, label="No Jitter", linewidth=1
+    # )
 
     if shear == 0:
         cbar = fig.colorbar(sm, ax=ax)
         cbar.ax.set_visible(False)  # Hide the colorbar visually
     else:
-        cbar = fig.colorbar(sm, ax=ax, ticks=phis, label=r"$\phi$ [deg]")
+        cbar = fig.colorbar(sm, ax=ax, ticks=test_phis, label=r"$\phi$ [deg]")
         cbar.ax.minorticks_off()  # Ensure minor ticks are disabled
         cbar.ax.tick_params(direction="out")
 
@@ -267,7 +256,7 @@ for i, shear in enumerate(shears):
     )
     axe.minorticks_off()
 
-    max_fwhm = det_to_fwhm(rs.max(), shear)
+    max_fwhm = det_to_fwhm(test_rs.max(), shear)
     axe.hlines(
         0,
         -max_fwhm / 2,
@@ -302,8 +291,8 @@ for i, shear in enumerate(shears):
 ax00 = axes[0][0].secondary_xaxis(
     "top",
     functions=(
-        lambda r: det_to_fwhm(r, shears[0]),
-        lambda fwhm: fwhm_to_det(fwhm, shears[0]),
+        lambda r: det_to_fwhm(r, test_shears[0]),
+        lambda fwhm: fwhm_to_det(fwhm, test_shears[0]),
     ),
 )
 ax00.set_xticks([0.2, 0.3, 0.35])  # Custom major xticks
@@ -318,8 +307,8 @@ ax00.set_xlabel("FWHM of semi-major axis [arcsec]")
 ax11 = axes[1][0].secondary_xaxis(
     "top",
     functions=(
-        lambda r: det_to_fwhm(r, shears[1]),
-        lambda fwhm: fwhm_to_det(fwhm, shears[1]),
+        lambda r: det_to_fwhm(r, test_shears[1]),
+        lambda fwhm: fwhm_to_det(fwhm, test_shears[1]),
     ),
 )
 ax11.set_xticks([0.2, 0.3, 0.4, 0.45])  # Custom major xticks
@@ -336,8 +325,8 @@ ax11.set_xlabel("FWHM of semi-major axis [arcsec]")
 ax22 = axes[2][0].secondary_xaxis(
     "top",
     functions=(
-        lambda r: det_to_fwhm(r, shears[2]),
-        lambda fwhm: fwhm_to_det(fwhm, shears[2]),
+        lambda r: det_to_fwhm(r, test_shears[2]),
+        lambda fwhm: fwhm_to_det(fwhm, test_shears[2]),
     ),
 )
 ax22.set_xticks([0.4, 0.5, 0.6, 0.65])  # Custom major xticks
@@ -350,6 +339,6 @@ ax22.xaxis.set_minor_locator(
 )  # 5 minor ticks between major ticks
 ax22.set_xlabel("FWHM of semi-major axis [arcsec]")
 
-plt.savefig(nt_files_path + "paper_figs/norm_sweep.pdf", bbox_inches="tight", dpi=500)
-plt.savefig(nt_files_path + "paper_figs/norm_sweep.png", bbox_inches="tight", dpi=500)
+plt.savefig(nt_files_path + "/paper_figs/norm_sweep.png", bbox_inches="tight", dpi=500)
+plt.savefig(nt_files_path + "/paper_figs/norm_sweep.pdf", bbox_inches="tight", dpi=500)
 plt.close()
