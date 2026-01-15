@@ -123,7 +123,7 @@ test_phis = np.linspace(0, 90, 7)
 test_shears = np.array([0, 0.3])
 test_shears = np.array([0, 0.3, 0.7])
 test_rs = powspace(
-    fwhm_to_det(1e-2 * det_pscale, test_shears[0]),
+    fwhm_to_det(1e-1 * det_pscale, test_shears[0]),
     fwhm_to_det(1.01 * det_pscale, test_shears[0]),
     2,
     60,
