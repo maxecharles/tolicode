@@ -87,6 +87,10 @@ def det_to_fwhm(det, shear):
     return 2.35482 * ((det / 1e6) / (1 - shear) ** 2) ** 0.25
 
 
+def get_shear(fwhm, det):
+    return 1 - np.sqrt((det / 1e6) / (fwhm / 2.35482) ** 4)
+
+
 def powspace(start, stop, power, num):
     """
     To generate r values at appropriate intervals.
@@ -99,7 +103,7 @@ def powspace(start, stop, power, num):
 from jax.scipy.stats import norm, beta
 
 
-def weibull_logpdf(x, k=1.5, lam=35):
+def weibull_logpdf(x, k=1.2, lam=250):
     x = np.asarray(x)
     return np.log(k) - k * np.log(lam) + (k - 1) * np.log(x) - (x / lam) ** k
 
@@ -164,6 +168,7 @@ def prior_fn(model, args={}):
         # shear
         shear = model.get("Jitter.shear")
         prior += beta.logpdf(shear, a=1.1, b=1.1)
+        prior += norm.logpdf(x=shear, loc=0.1, scale=0.05)
 
         # jitter angle phi
         angle = model.get("Jitter.phi")
@@ -275,7 +280,9 @@ for ang in np.linspace(0, 90, 5):
         }
         shm_datas.append(shm_data)
 
-    for r in np.linspace(fwhm_to_det(0.375 / 5, 0.1), fwhm_to_det(0.375 / 1, 0.1), 5):
+        # for r in np.linspace(fwhm_to_det(0.375 / 5, 0.1), fwhm_to_det(0.375 / 1, 0.1), 5):
+        fwhm = mag
+        r = fwhm_to_det(fwhm, shear=0.1)
         dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
         mvn_data = {
             "params": ["Jitter.r", "Jitter.phi"],
@@ -569,15 +576,20 @@ def grad_fn(grads, args={}):
 
         if data_key == "mvn":
             grads = (
-                grads.multiply("Jitter.r", np.array(1e-1))
+                grads.multiply("Jitter.r", 0.2 * det**1.1)
                 if "Jitter.r" in optimisers
                 else grads
             )
-            grads = (
-                grads.multiply("Jitter.shear", np.array(5e0))
-                if "Jitter.shear" in optimisers
-                else grads
-            )
+            # grads = (
+            #     grads.multiply("Jitter.r", np.array(1e-1))
+            #     if "Jitter.r" in optimisers
+            #     else grads
+            # )
+            # grads = (
+            #     grads.multiply("Jitter.shear", np.array(5e0))
+            #     if "Jitter.shear" in optimisers
+            #     else grads
+            # )
         else:
             grads = (
                 grads.multiply("Jitter.r", np.array(2e-3))
@@ -603,17 +615,35 @@ def grad_fn(grads, args={}):
                     else grads
                 )
     else:
-        if angle == 0.0 or angle == 30.0:
+
+        mag = data_dict["values"][0]
+        if mag < 0.3:
             grads = (
-                grads.multiply("jitter_angle", np.array(2))
+                grads.multiply("jitter_angle", np.array(6))
                 if "jitter_angle" in optimisers
                 else grads
             )
+            grads = (
+                grads.multiply("jitter_mag", np.array(3))
+                if "jitter_mag" in optimisers
+                else grads
+            )
 
-        elif angle == 60.0 or angle == 90.0:
+            if mag < 0.1:
+                grads = (
+                    grads.multiply("jitter_mag", np.array(2))
+                    if "jitter_mag" in optimisers
+                    else grads
+                )
+        elif mag > 0.3:
             grads = (
                 grads.multiply("jitter_angle", np.array(0.5))
                 if "jitter_angle" in optimisers
+                else grads
+            )
+            grads = (
+                grads.multiply("jitter_mag", np.array(0.5))
+                if "jitter_mag" in optimisers
                 else grads
             )
 
@@ -708,9 +738,9 @@ lin_opts = {
 
 norm_opts = {
     "Jitter.r": sgd(5e-3, 0),
-    "Jitter.shear": sgd(1e-7, 5),
-    # "Jitter.shear": sgd(1e-6, 5),
-    "Jitter.phi": sgd(1e-5, 0),
+    # "Jitter.shear": sgd(1e-7, 5),
+    "Jitter.phi": sgd(1e-2, 0),
+    # "Jitter.phi": sgd(1e-5, 0),
 }
 
 # looping over models
@@ -731,16 +761,16 @@ for model_key in tqdm(models.keys(), desc="Models"):
 
     # looping over data arrays
     for data_key in tqdm(datas.keys(), desc="Data Arrays"):
-        # if data_key != "mvn":
-        #     continue
+        if data_key != "mvn":
+            continue
         # if data_key == "mvn":
         #     continue
-        if data_key != "lin":
+        # if data_key != "lin":
+        #     continue
+        # if model_key != "lin":
+        #     continue
+        if model_key != "mvn":
             continue
-        if model_key != "lin":
-            continue
-        # if model_key == "mvn":
-        # continue
         sep_values = np.array([], dtype=np.float64)
 
         # looping over noise realisations
@@ -749,7 +779,7 @@ for model_key in tqdm(models.keys(), desc="Models"):
             data_dict = datas[data_key][i % len(datas[data_key])]
             data = data_dict["data"]
             angle = data_dict["values"][1]
-            print(data_dict["params"], data_dict["values"])
+
             if model_key == "mvn" and data_key != "mvn":
                 model = model.set("Jitter.phi", angle)
             elif model_key != "mvn" and data_key == "mvn":
@@ -773,8 +803,9 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 f"Model {model_key}",
                 f"Data {data_key}",
                 f"Realisation {i+1}/{n_realisations}",
-                data_dict["params"],
-                data_dict["values"],
+                # data_dict["params"],
+                data_dict["values"][0],
+                data_dict["values"][1],
             )
             # RUN GRAD DESCENT
             gd_model = run_grad_desc(
@@ -792,8 +823,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 suffix=f"_{model_key}_{data_key}_{i}",
             )
 
-            sep_values = np.append(sep_values, gd_model.separation)
-        sep_dict[f"{model_key}_{data_key}"] = sep_values
+        #     sep_values = np.append(sep_values, gd_model.separation)
+        # sep_dict[f"{model_key}_{data_key}"] = sep_values
 
 # # saving
 # current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
