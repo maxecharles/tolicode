@@ -177,13 +177,26 @@ np.save(nt_files_path + "results/shm/fia_seps.npy", seps_shm)
 
 
 # calculate the no jitter baseline
+baseline_params = [
+    "separation",
+    "position_angle",
+    "x_position",
+    "y_position",
+    "log_flux",
+    "contrast",
+    "jitter_mag",
+    "jitter_angle",
+    "aperture.coefficients",
+    # # 'wavelengths',
+    # # 'psf_pixel_scale',
+]
 stable_model = lin_tel.set(
     "jitter_mag", np.array(0.0)
 )  # this shouldn't be necessary since we only call .model but JIC
 stable_data = stable_model.model()
 stable_cov = cov_mat(
     stable_model,
-    params,
+    baseline_params,
     likelihood_fn,
     np.round(stable_data),
     save_memory=save_ram,
@@ -191,3 +204,5 @@ stable_cov = cov_mat(
 baseline = np.sqrt(np.abs(stable_cov[0, 0]))
 print(f"Baseline with no wavelengths or pixel scale: {1000 * baseline} mas")
 np.save(nt_files_path + "results/baseline.npy", 1000 * baseline)
+np.save(nt_files_path + "results/matrices/covariance.npy", stable_cov)
+np.save(nt_files_path + "results/matrices/fisher.npy", np.linalg.inv(stable_cov))

@@ -569,12 +569,10 @@ def grad_fn(grads, args={}):
     # if model_key != "mvn" and data_key == "mvn":
     #     grads = grads.multiply("jitter_mag", np.array(2e-2))
 
-    angle = data_dict["values"][1]
     if model_key == "mvn":
 
-        det = data_dict["values"][0]
-
         if data_key == "mvn":
+            det = data_dict["values"][0]
             grads = (
                 grads.multiply("Jitter.r", 0.2 * det**1.1)
                 if "Jitter.r" in optimisers
@@ -590,72 +588,75 @@ def grad_fn(grads, args={}):
                 if "Jitter.shear" in optimisers
                 else grads
             )
-            # grads = (
-            #     grads.multiply("Jitter.r", np.array(1e-1))
-            #     if "Jitter.r" in optimisers
-            #     else grads
-            # )
-            # grads = (
-            #     grads.multiply("Jitter.shear", np.array(5e0))
-            #     if "Jitter.shear" in optimisers
-            #     else grads
-            # )
-        else:
-            grads = (
-                grads.multiply("Jitter.r", np.array(2e-3))
-                if "Jitter.r" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("Jitter.r", np.array(1e2 * det))
-                if "Jitter.r" in optimisers
-                else grads
-            )
 
-            if det > 0.25:
-                grads = (
-                    grads.multiply("Jitter.shear", np.array(0.15))
-                    if "Jitter.shear" in optimisers
-                    else grads
-                )
-            if det > 0.31:
-                grads = (
-                    grads.multiply("Jitter.shear", np.array(0.4))
-                    if "Jitter.shear" in optimisers
-                    else grads
-                )
-    else:
+        # else:
 
-        mag = data_dict["values"][0]
-        if mag < 0.3:
+        #     mag = data_dict["values"][0]
+        #     # det = fwhm_to_det(mag, shear=0.1)
+
+        #     grads = (
+        #         grads.multiply("Jitter.r", np.array(2e-3))
+        #         if "Jitter.r" in optimisers
+        #         else grads
+        #     )
+        #     grads = (
+        #         grads.multiply("Jitter.r", np.array(1e2 * det))
+        #         if "Jitter.r" in optimisers
+        #         else grads
+        #     )
+
+        #     if det > 0.25:
+        #         grads = (
+        #             grads.multiply("Jitter.shear", np.array(0.15))
+        #             if "Jitter.shear" in optimisers
+        #             else grads
+        #         )
+        #     if det > 0.31:
+        #         grads = (
+        #             grads.multiply("Jitter.shear", np.array(0.4))
+        #             if "Jitter.shear" in optimisers
+        #             else grads
+        #         )
+    elif model_key != "mvn":
+        if data_key == "mvn":
+            det = data_dict["values"][0]
             grads = (
-                grads.multiply("jitter_angle", np.array(6))
+                grads.multiply("jitter_angle", 15 * det ** (-0.7))
                 if "jitter_angle" in optimisers
                 else grads
             )
-            grads = (
-                grads.multiply("jitter_mag", np.array(3))
-                if "jitter_mag" in optimisers
-                else grads
-            )
 
-            if mag < 0.1:
+        elif data_key != "mvn":
+            mag = data_dict["values"][0]
+            if mag < 0.3:
                 grads = (
-                    grads.multiply("jitter_mag", np.array(2))
+                    grads.multiply("jitter_angle", np.array(6))
+                    if "jitter_angle" in optimisers
+                    else grads
+                )
+                grads = (
+                    grads.multiply("jitter_mag", np.array(3))
                     if "jitter_mag" in optimisers
                     else grads
                 )
-        elif mag > 0.3:
-            grads = (
-                grads.multiply("jitter_angle", np.array(0.5))
-                if "jitter_angle" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("jitter_mag", np.array(0.5))
-                if "jitter_mag" in optimisers
-                else grads
-            )
+
+                if mag < 0.1:
+                    grads = (
+                        grads.multiply("jitter_mag", np.array(2))
+                        if "jitter_mag" in optimisers
+                        else grads
+                    )
+            elif mag > 0.3:
+                grads = (
+                    grads.multiply("jitter_angle", np.array(0.5))
+                    if "jitter_angle" in optimisers
+                    else grads
+                )
+                grads = (
+                    grads.multiply("jitter_mag", np.array(0.5))
+                    if "jitter_mag" in optimisers
+                    else grads
+                )
 
     return grads
 
@@ -770,16 +771,16 @@ for model_key in tqdm(models.keys(), desc="Models"):
 
     # looping over data arrays
     for data_key in tqdm(datas.keys(), desc="Data Arrays"):
-        # if data_key != "mvn":
-        # continue
-        if data_key != model_key:
+        if data_key != "mvn":
             continue
+        # if data_key != model_key:
+        #     continue
         # if data_key == "mvn":
         #     continue
         # if data_key != "lin":
         #     continue
-        # if model_key != "lin":
-        #     continue
+        if model_key != "lin":
+            continue
         # if model_key != "mvn":
         #     continue
         sep_values = np.array([], dtype=np.float64)
