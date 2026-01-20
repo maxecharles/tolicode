@@ -580,6 +580,16 @@ def grad_fn(grads, args={}):
                 if "Jitter.r" in optimisers
                 else grads
             )
+            grads = (
+                grads.multiply("Jitter.phi", det ** (-0.1))
+                if "Jitter.phi" in optimisers
+                else grads
+            )
+            grads = (
+                grads.multiply("Jitter.shear", det ** (-0.7))
+                if "Jitter.shear" in optimisers
+                else grads
+            )
             # grads = (
             #     grads.multiply("Jitter.r", np.array(1e-1))
             #     if "Jitter.r" in optimisers
@@ -718,7 +728,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 25
+n_realisations = 5
 
 # Gradient descent
 common_optimisers = {
@@ -737,10 +747,9 @@ lin_opts = {
 }
 
 norm_opts = {
-    "Jitter.r": sgd(5e-3, 0),
-    # "Jitter.shear": sgd(1e-7, 5),
-    "Jitter.phi": sgd(1e-2, 0),
-    # "Jitter.phi": sgd(1e-5, 0),
+    "Jitter.r": sgd(5e-3, 1),
+    "Jitter.shear": sgd(1e-4, 5),
+    "Jitter.phi": sgd(2e-1, 0),
 }
 
 # looping over models
@@ -761,7 +770,9 @@ for model_key in tqdm(models.keys(), desc="Models"):
 
     # looping over data arrays
     for data_key in tqdm(datas.keys(), desc="Data Arrays"):
-        if data_key != "mvn":
+        # if data_key != "mvn":
+        # continue
+        if data_key != model_key:
             continue
         # if data_key == "mvn":
         #     continue
@@ -769,8 +780,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if model_key != "lin":
         #     continue
-        if model_key != "mvn":
-            continue
+        # if model_key != "mvn":
+        #     continue
         sep_values = np.array([], dtype=np.float64)
 
         # looping over noise realisations
