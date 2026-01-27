@@ -127,7 +127,7 @@ test_rs = powspace(
     100,
     # fwhm_to_det(1.01 * det_pscale, test_shears[0]),
     2,
-    60,
+    30,
 )
 
 # saving test points

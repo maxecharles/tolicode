@@ -600,8 +600,8 @@ def grad_fn(grads, args={}):
                 if "Jitter.r" in optimisers
                 else grads
             )
-            a = -5
-            A = 1e-4
+            a = -4
+            A = 1e-3
             grads = (
                 grads.multiply("Jitter.shear", A * mag**a / b**a)
                 if "Jitter.shear" in optimisers
