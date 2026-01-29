@@ -168,7 +168,11 @@ def prior_fn(model, args={}):
         # shear
         shear = model.get("Jitter.shear")
         prior += beta.logpdf(shear, a=1.1, b=1.1)
-        prior += norm.logpdf(x=shear, loc=0.1, scale=0.05)
+        if "data_key" in args.keys():
+            if args["data_key"] == "mvn":
+                prior += norm.logpdf(x=shear, loc=0.1, scale=0.05)
+            if args["data_key"] != "mvn":
+                prior += norm.logpdf(x=shear, loc=0.8, scale=0.01)
 
         # jitter angle phi
         angle = model.get("Jitter.phi")
@@ -547,6 +551,31 @@ def run_grad_desc(
             plt.savefig(nt_files_path + f"test/params_{p}_{suffix}.png", dpi=150)
             plt.close()
 
+            m = models_out[-1]
+            if isinstance(m, dlT.JitteredToliman):
+                sim = m.jitter_model()
+            elif isinstance(m, dlT.Toliman):
+                sim = m.model()
+
+            # plot residuals
+            residual = data - sim
+            plt.figure(figsize=(12, 4))
+            plt.subplot(1, 3, 1)
+            plt.title("Model")
+            plt.imshow(sim, cmap="inferno")
+            plt.colorbar()
+            plt.subplot(1, 3, 2)
+            plt.title("Data")
+            plt.imshow(data, cmap="inferno")
+            plt.colorbar()
+            plt.subplot(1, 3, 3)
+            plt.title("Residual")
+            plt.imshow(residual, cmap="coolwarm", norm=colors.CenteredNorm())
+            plt.colorbar()
+            plt.tight_layout()
+            plt.savefig(nt_files_path + f"test/residuals_{suffix}.png", dpi=150)
+            plt.close()
+
     return models_out[-1]
 
 
@@ -594,17 +623,26 @@ def grad_fn(grads, args={}):
 
             a = 5
             b = 0.375
-            A = 1
+            A = 2e-1
             grads = (
                 grads.multiply("Jitter.r", A * mag**a / b**a)
                 if "Jitter.r" in optimisers
                 else grads
             )
-            a = -4
-            A = 1e-3
+            a = -3.0
+            A = 2e-3
             grads = (
                 grads.multiply("Jitter.shear", A * mag**a / b**a)
                 if "Jitter.shear" in optimisers
+                else grads
+            )
+
+            A = 2e-2
+            a = -3
+            # a = -0.5
+            grads = (
+                grads.multiply("Jitter.phi", A * mag**a / b**a)
+                if "Jitter.phi" in optimisers
                 else grads
             )
     elif model_key != "mvn":
@@ -738,9 +776,9 @@ lin_opts = {
 }
 
 norm_opts = {
-    # "Jitter.r": sgd(5e-3, 1),
-    "Jitter.shear": sgd(1e-4, 25),
-    # "Jitter.phi": sgd(2e-1, 0),
+    "Jitter.r": sgd(5e-3, 1),
+    "Jitter.shear": sgd(1e-4, 5),
+    "Jitter.phi": sgd(2e-1, 0),
 }
 
 # looping over models
@@ -761,8 +799,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
 
     # looping over data arrays
     for data_key in tqdm(datas.keys(), desc="Data Arrays"):
-        if data_key != "lin":
-            continue
+        # if data_key != "lin":
+        #     continue
         # if data_key != model_key:
         #     continue
         # if data_key == "mvn":
@@ -785,8 +823,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
             if model_key == "mvn" and data_key != "mvn":
                 mag = data_dict["values"][0]
                 model = model.set("Jitter.phi", angle)
-                model = model.set("Jitter.shear", np.array(0.7))
-                model = model.set("Jitter.r", fwhm_to_det(mag, shear=0.7))
+                model = model.set("Jitter.shear", np.array(0.8))
+                model = model.set("Jitter.r", 0.5 * fwhm_to_det(mag, shear=0.8))
             elif model_key != "mvn" and data_key == "mvn":
                 model = model.set("jitter_angle", angle)
             else:
