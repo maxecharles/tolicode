@@ -802,6 +802,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
         # if data_key != "lin":
         #     continue
         # if data_key != model_key:
+        # continue
+        # if data_key != "mvn":
         #     continue
         # if data_key == "mvn":
         #     continue
@@ -809,8 +811,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if model_key != "lin":
         #     continue
-        if model_key != "mvn":
-            continue
+        # if model_key != "mvn":
+        #     continue
         sep_values = np.array([], dtype=np.float64)
 
         # looping over noise realisations
@@ -819,6 +821,10 @@ for model_key in tqdm(models.keys(), desc="Models"):
             data_dict = datas[data_key][i % len(datas[data_key])]
             data = data_dict["data"]
             angle = data_dict["values"][1]
+
+            print()
+            print(f"{i}")
+            print(data_dict["values"])
 
             if model_key == "mvn" and data_key != "mvn":
                 mag = data_dict["values"][0]
@@ -833,7 +839,6 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 jr.PRNGKey(random.randint(0, int(1e8))),
                 data,
             )
-            # noisy_data = data
             args = {
                 "data_dict": data_dict,
                 "model_key": model_key,
