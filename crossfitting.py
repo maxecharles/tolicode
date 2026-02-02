@@ -19,7 +19,7 @@ import optax
 
 
 import os
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import random
 from datetime import datetime
 import secrets
@@ -658,7 +658,7 @@ def grad_fn(grads, args={}):
         elif data_key != "mvn":
             mag = data_dict["values"][0]
 
-            m = 55 / 3
+            m = -55 / 3
             n = 7.375
 
             grads = (
