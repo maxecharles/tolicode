@@ -22,6 +22,7 @@ import os
 from tqdm.notebook import tqdm
 import random
 from datetime import datetime
+import secrets
 
 # plotting
 import matplotlib as mpl
@@ -551,30 +552,30 @@ def run_grad_desc(
             plt.savefig(nt_files_path + f"test/params_{p}_{suffix}.png", dpi=150)
             plt.close()
 
-            m = models_out[-1]
-            if isinstance(m, dlT.JitteredToliman):
-                sim = m.jitter_model()
-            elif isinstance(m, dlT.Toliman):
-                sim = m.model()
+        m = models_out[-1]
+        if isinstance(m, dlT.JitteredToliman):
+            sim = m.jitter_model()
+        elif isinstance(m, dlT.Toliman):
+            sim = m.model()
 
-            # plot residuals
-            residual = data - sim
-            plt.figure(figsize=(12, 4))
-            plt.subplot(1, 3, 1)
-            plt.title("Model")
-            plt.imshow(sim, cmap="inferno")
-            plt.colorbar()
-            plt.subplot(1, 3, 2)
-            plt.title("Data")
-            plt.imshow(data, cmap="inferno")
-            plt.colorbar()
-            plt.subplot(1, 3, 3)
-            plt.title("Residual")
-            plt.imshow(residual, cmap="coolwarm", norm=colors.CenteredNorm())
-            plt.colorbar()
-            plt.tight_layout()
-            plt.savefig(nt_files_path + f"test/residuals_{suffix}.png", dpi=150)
-            plt.close()
+        # plot residuals
+        residual = data - sim
+        plt.figure(figsize=(12, 4))
+        plt.subplot(1, 3, 1)
+        plt.title("Model")
+        plt.imshow(sim, cmap="inferno")
+        plt.colorbar()
+        plt.subplot(1, 3, 2)
+        plt.title("Data")
+        plt.imshow(data, cmap="inferno")
+        plt.colorbar()
+        plt.subplot(1, 3, 3)
+        plt.title("Residual")
+        plt.imshow(residual, cmap="coolwarm", norm=colors.CenteredNorm())
+        plt.colorbar()
+        plt.tight_layout()
+        plt.savefig(nt_files_path + f"test/residuals_{suffix}.png", dpi=150)
+        plt.close()
 
     return models_out[-1]
 
@@ -583,7 +584,7 @@ def run_grad_desc(
 # TODO JIT THESE
 
 
-# @zdx.filter_jit
+@zdx.filter_jit
 def grad_fn(grads, args={}):
 
     # print("Compiling grad_fn...")
@@ -656,35 +657,50 @@ def grad_fn(grads, args={}):
 
         elif data_key != "mvn":
             mag = data_dict["values"][0]
-            if mag < 0.3:
-                grads = (
-                    grads.multiply("jitter_angle", np.array(6))
-                    if "jitter_angle" in optimisers
-                    else grads
-                )
-                grads = (
-                    grads.multiply("jitter_mag", np.array(3))
-                    if "jitter_mag" in optimisers
-                    else grads
-                )
 
-                if mag < 0.1:
-                    grads = (
-                        grads.multiply("jitter_mag", np.array(2))
-                        if "jitter_mag" in optimisers
-                        else grads
-                    )
-            elif mag > 0.3:
-                grads = (
-                    grads.multiply("jitter_angle", np.array(0.5))
-                    if "jitter_angle" in optimisers
-                    else grads
-                )
-                grads = (
-                    grads.multiply("jitter_mag", np.array(0.5))
-                    if "jitter_mag" in optimisers
-                    else grads
-                )
+            m = 55 / 3
+            n = 7.375
+
+            grads = (
+                grads.multiply("jitter_mag", np.array(m * mag + n))
+                if "jitter_mag" in optimisers
+                else grads
+            )
+            grads = (
+                grads.multiply("jitter_angle", np.array(m * mag + n))
+                if "jitter_angle" in optimisers
+                else grads
+            )
+            # mag = data_dict["values"][0]
+            # if mag < 0.3:
+            #     grads = (
+            #         grads.multiply("jitter_angle", np.array(6))
+            #         if "jitter_angle" in optimisers
+            #         else grads
+            #     )
+            #     grads = (
+            #         grads.multiply("jitter_mag", np.array(3))
+            #         if "jitter_mag" in optimisers
+            #         else grads
+            #     )
+
+            #     if mag < 0.1:
+            #         grads = (
+            #             grads.multiply("jitter_mag", np.array(2))
+            #             if "jitter_mag" in optimisers
+            #             else grads
+            #         )
+            # elif mag > 0.3:
+            #     grads = (
+            #         grads.multiply("jitter_angle", np.array(0.5))
+            #         if "jitter_angle" in optimisers
+            #         else grads
+            #     )
+            #     grads = (
+            #         grads.multiply("jitter_mag", np.array(0.5))
+            #         if "jitter_mag" in optimisers
+            #         else grads
+            #     )
 
     return grads
 
@@ -757,7 +773,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 5
+n_realisations = 25
 
 # Gradient descent
 common_optimisers = {
@@ -789,7 +805,6 @@ for model_key in tqdm(models.keys(), desc="Models"):
     else:
         optimisers = {**common_optimisers, **lin_opts}
 
-    model = models[model_key]
     posterior_fn = posterior_fns[model_key]
 
     @zdx.filter_jit
@@ -813,6 +828,7 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if model_key != "mvn":
         #     continue
+        model = models[model_key]
         sep_values = np.array([], dtype=np.float64)
 
         # looping over noise realisations
@@ -835,10 +851,10 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 model = model.set("jitter_angle", angle)
             else:
                 model = model.set(data_dict["params"], data_dict["values"])
-            noisy_data = jr.poisson(
-                jr.PRNGKey(random.randint(0, int(1e8))),
-                data,
-            )
+
+            # poisson draw!
+            noisy_data = jr.poisson(jr.PRNGKey(secrets.randbits(32)), data)
+
             args = {
                 "data_dict": data_dict,
                 "model_key": model_key,
@@ -851,7 +867,6 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 f"Model {model_key}",
                 f"Data {data_key}",
                 f"Realisation {i+1}/{n_realisations}",
-                # data_dict["params"],
                 data_dict["values"][0],
                 data_dict["values"][1],
             )
@@ -871,8 +886,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 suffix=f"_{model_key}_{data_key}_{i}",
             )
 
-        #     sep_values = np.append(sep_values, gd_model.separation)
-        # sep_dict[f"{model_key}_{data_key}"] = sep_values
+            sep_values = np.append(sep_values, gd_model.separation)
+        sep_dict[f"{model_key}_{data_key}"] = sep_values
 
 # # saving
 # current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
