@@ -737,7 +737,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 2
+n_realisations = 500
 
 # Gradient descent
 common_optimisers = {
@@ -850,6 +850,6 @@ for model_key in tqdm(models.keys(), desc="Models"):
         sep_dict[f"{model_key}_{data_key}"] = sep_values
 
 # saving
-current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
+current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
 save_str = current_time + f"_{n_realisations:04d}.npy"
 np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
