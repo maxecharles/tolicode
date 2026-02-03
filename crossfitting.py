@@ -173,7 +173,7 @@ def prior_fn(model, args={}):
             if args["data_key"] == "mvn":
                 prior += norm.logpdf(x=shear, loc=0.1, scale=0.05)
             if args["data_key"] != "mvn":
-                prior += norm.logpdf(x=shear, loc=0.8, scale=0.01)
+                prior += norm.logpdf(x=shear, loc=0.8, scale=0.002)
 
         # jitter angle phi
         angle = model.get("Jitter.phi")
@@ -285,7 +285,6 @@ for ang in np.linspace(0, 90, 5):
         }
         shm_datas.append(shm_data)
 
-        # for r in np.linspace(fwhm_to_det(0.375 / 5, 0.1), fwhm_to_det(0.375 / 1, 0.1), 5):
         fwhm = mag
         r = fwhm_to_det(fwhm, shear=0.1)
         dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
@@ -438,6 +437,7 @@ def summarise_fit(
 
         plt.tight_layout()
         # plt.close()
+        plt.savefig(nt_files_path + f"test/kernel{suffix}.png", dpi=150)
         plt.close()
 
 
@@ -511,7 +511,7 @@ def run_grad_desc(
 
     if plot:
         plot_losses(losses, 10, suffix=suffix)
-        # summarise_fit(model, data, likelihood_im_fn, suffix)
+        summarise_fit(model, data, likelihood_im_fn, suffix)
 
         params_in = params
         for p in np.arange(0, len(params), 2):
@@ -624,14 +624,14 @@ def grad_fn(grads, args={}):
 
             a = 5
             b = 0.375
-            A = 2e-1
+            A = 1e-1
             grads = (
                 grads.multiply("Jitter.r", A * mag**a / b**a)
                 if "Jitter.r" in optimisers
                 else grads
             )
             a = -3.0
-            A = 2e-3
+            A = 2e-4
             grads = (
                 grads.multiply("Jitter.shear", A * mag**a / b**a)
                 if "Jitter.shear" in optimisers
@@ -731,49 +731,13 @@ def norm_fn(model, args={}):
 
 
 # %%
-# l = models["lin"]
-
-# raw = l.model()
-# # plt.imshow(raw)
-# # plt.colorbar()
-# # plt.close()
-
-# l = l.set("jitter_angle", np.array(90.0)).set("jitter_mag", np.array(1.0))
-# arr = l.jitter_model()
-# plt.figure(figsize=(10, 3))
-# plt.subplot(1, 2, 1)
-# plt.imshow(arr)
-# plt.colorbar()
-# plt.subplot(1, 2, 2)
-# plt.imshow(raw - arr, "seismic", norm=mpl.colors.CenteredNorm())
-# plt.colorbar()
-# plt.close()
-
-# n = models["mvn"]
-# n = (
-#     n.set("Jitter.phi", np.array(90.0))
-#     .set("Jitter.r", np.array(1.0))
-#     .set("Jitter.shear", np.array(0.98))
-#     .set("Jitter.kernel_size", 31)
-# )
-# arr = n.model()
-# plt.figure(figsize=(10, 3))
-# plt.subplot(1, 2, 1)
-# plt.imshow(arr)
-# plt.colorbar()
-# plt.subplot(1, 2, 2)
-# plt.imshow(raw - arr, "seismic", norm=mpl.colors.CenteredNorm())
-# plt.colorbar()
-# plt.close()
-
-# %%
 from zodiax.optimisation import sgd, adam
 
 sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 25
+n_realisations = 2
 
 # Gradient descent
 common_optimisers = {
@@ -838,10 +802,6 @@ for model_key in tqdm(models.keys(), desc="Models"):
             data = data_dict["data"]
             angle = data_dict["values"][1]
 
-            print()
-            print(f"{i}")
-            print(data_dict["values"])
-
             if model_key == "mvn" and data_key != "mvn":
                 mag = data_dict["values"][0]
                 model = model.set("Jitter.phi", angle)
@@ -882,245 +842,14 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 gradloss_func=gradloss_func,
                 likelihood_im_fn=loglike_fns[model_key],
                 eps=5e-4,
-                plot=True,
+                plot=False,
                 suffix=f"_{model_key}_{data_key}_{i}",
             )
 
             sep_values = np.append(sep_values, gd_model.separation)
         sep_dict[f"{model_key}_{data_key}"] = sep_values
 
-# # saving
-# current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
-# save_str = current_time + f"_{n_realisations:04d}.npy"
-# np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
-
-# %%
-# model = models["mvn"]
-# data = datas["lin"]
-# # data = datas["mvn"]
-# loglike_fn = loglike_fns["mvn"]
-# optimisers = {**common_optimisers, **norm_opts}
-
-# noisy_data = jr.poisson(jr.PRNGKey(random.randint(0, int(1e8))), data)
-
-
-# def normalisation_fn(model):
-#     # return model.set("Jitter.r", np.array(1e-16))
-#     return model.set("Jitter.r", np.clip(model.Jitter.r, 1e-16))
-
-
-# gd_model = run_grad_desc(
-#     model,
-#     noisy_data,
-#     optimisers=optimisers,
-#     loglike_fn=loglike_fn,
-#     norm_fn=normalisation_fn,
-#     iters=500,
-#     eps=1e-4,
-#     plot=True,
-# )
-
-# %%
-# total_sep_dict = {}
-# sep_dict_save_dir = "files/sep_dicts_revise/"
-
-# # looping over saved sep_dicts
-# for f in os.listdir(sep_dict_save_dir):
-#     if not f.endswith(".npy"):
-#         continue
-
-#     # loading each file
-#     this_dict = np.load(os.path.join(sep_dict_save_dir, f), allow_pickle=True).item()
-
-#     # appending to total_sep_dict
-#     for k in this_dict.keys():
-#         total_sep_dict[k] = (
-#             np.append(total_sep_dict[k], this_dict[k])
-#             if k in total_sep_dict.keys()
-#             else this_dict[k]
-#         )
-
-# # %%
-# import numpy as onp
-
-
-# def bootstrap_histogram(histogram: Array, num_bootstraps: int) -> Array:
-#     """
-#     Perform bootstrapping on a histogram to get theuncertainty in the mean and standard deviation.
-#     """
-#     boot_means = []
-#     boot_stds = []
-
-#     for _ in range(num_bootstraps):
-#         resampled_data = onp.random.choice(
-#             histogram,
-#             size=len(histogram),
-#             replace=True,
-#         )
-#         boot_means.append(np.mean(resampled_data))
-#         boot_stds.append(np.std(resampled_data, ddof=1))
-
-#     # Compute statistics
-#     mean_estimate = np.mean(histogram)
-#     std_estimate = np.std(histogram)
-#     mean_uncertainty = np.std(np.array(boot_means))
-#     std_uncertainty = np.std(np.array(boot_stds))
-
-#     return mean_estimate, mean_uncertainty, std_estimate, std_uncertainty
-
-
-# # %%
-# print(f"{len(list(total_sep_dict.values())[0])} noise realisations.")
-
-# n_bins = 30
-# true_sep = models["lin"].separation  # arcseconds
-# fontsize = 20
-# fisher_sigmas = {
-#     "lin": 1e-3 * 0.24839681897145435,
-#     "shm": 1e-3 * 0.24839681897145435,
-# }  # pre-calculated
-# titles = {"lin": "Linear", "shm": "SHM", "mvn": "MVN"}
-
-
-# fig, ax = plt.subplots(
-#     3,
-#     3,
-#     figsize=(8.5, 4.5),
-#     sharex=True,
-#     sharey=True,
-# )
-# fig.subplots_adjust(
-#     top=0.915,
-#     bottom=0.106,
-#     left=0.074,
-#     right=0.985,
-#     hspace=0.0,
-#     wspace=0.0,
-# )
-
-# for i in range(3):
-#     for j in range(3):
-#         if i == 0:
-#             sigma_0 = fisher_sigmas["lin"]
-#         elif i == 1:
-#             sigma_0 = fisher_sigmas["shm"]
-
-#         key = f"{list(models.keys())[i]}_{list(datas.keys())[j]}"
-#         results = total_sep_dict[key]
-#         offset_hist = results - true_sep  # in arseconds
-#         offset_hist /= sigma_0  # converting to sigma units
-
-#         ax[i][j].hist(
-#             offset_hist,
-#             bins=n_bins,
-#             density=True,
-#             color=ito_seven[0],
-#             alpha=0.7,
-#             histtype="stepfilled",
-#             label="MLEs hist.",
-#         )
-#         ax[i][j].set(
-#             # title=f"{key}",
-#             xlim=(-4, 4),
-#             xticks=range(-3, 4),
-#             yticks=[],
-#         )
-
-#         ax[i][j].set_xticklabels(
-#             [
-#                 r"$-3\sigma_0$",
-#                 r"$-2\sigma_0$",
-#                 r"$-\sigma_0$",
-#                 "0",
-#                 r"$\sigma_0$",
-#                 r"$2\sigma_0$",
-#                 r"$3\sigma_0$",
-#             ]
-#         )
-
-#         ax[i][j].minorticks_off()
-#         ax[i][j].tick_params(direction="out")
-#         ax[i][j].grid(True, alpha=0.5, linestyle="-")
-
-#         # # Bootstrapping to find mean, std and uncertainties of each
-#         # mu, dmu, std, dstd = bootstrap_histogram(offset_hist, 1000)
-
-#         # if we don't care about the uncertainties
-#         mu = np.mean(offset_hist)
-#         std = np.std(offset_hist)
-
-#         xmin, xmax = plt.xlim()
-
-#         xs = np.linspace(xmin, xmax, 100)
-#         bell_curve = jax.scipy.stats.norm.pdf(xs, mu, std)
-
-#         one_sigma_xs = np.linspace(mu - std, mu + std, 100)
-#         one_sigma_bell = jax.scipy.stats.norm.pdf(one_sigma_xs, mu, std)
-
-#         mean_max = jax.scipy.stats.norm.pdf(mu, mu, std)
-
-#         # Plot the normal distribution curve
-#         ax[i][j].plot(
-#             xs, bell_curve, ito_seven[1], linewidth=2, alpha=1.0, label="Gaussian fit"
-#         )
-#         ax[i][j].fill_between(
-#             one_sigma_xs,
-#             one_sigma_bell,
-#             color=ito_seven[1],
-#             alpha=0.4,
-#             zorder=1,
-#             label=r"$1\sigma$ region",
-#             linewidth=0,
-#         )
-
-#         if j != 1:
-#             ax[i][j].set_xlabel(None)
-#         else:
-#             ax[i][j].set_xlabel(
-#                 r"Offset between recovered separation and truth",
-#                 fontsize=0.7 * fontsize,
-#             )
-
-#         if j == 0:
-#             ax[i][j].set_ylabel(f"{titles[list(models.keys())[i]]}", fontsize=fontsize)
-
-#             if i == 0:
-#                 legend = ax[i][i].legend(
-#                     fontsize=8, facecolor="white", loc="upper left"
-#                 )
-
-#                 # # This is just to create a blank space behind the legend
-#                 rect = mpl.patches.Rectangle(
-#                     (0.02, 0.62),
-#                     0.355,
-#                     0.4,
-#                     fill=True,
-#                     edgecolor=None,
-#                     transform=ax[i][j].transAxes,
-#                     zorder=2,
-#                     color="white",
-#                 )
-
-#                 ax[i][j].add_patch(rect)
-
-#         else:
-#             ax[i][j].set(
-#                 ylabel=None,
-#             )
-#         if i == 0:
-#             ax[i][j].set(
-#                 xlabel=None,
-#             )
-#             ax[i][j].set_title(
-#                 f"{titles[list(datas.keys())[j]]}", fontsize=fontsize
-#             )  # Set the text size of the title
-#             ax[i][j].tick_params(axis="x", which="both", top=False, direction="in")
-#         else:
-#             ax[i][j].set(
-#                 title=None,
-#             )
-
-# plt.savefig("files/paper_figs/biases.pdf", dpi=500)
-# plt.close()
-
-# # %%
+# saving
+current_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
+save_str = current_time + f"_{n_realisations:04d}.npy"
+np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
