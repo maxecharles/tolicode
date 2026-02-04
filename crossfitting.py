@@ -45,7 +45,8 @@ ito_seven = [
     "#F0E442",
 ]
 contrast_three = ["#004488", "#BB5566", "#DDAA33"]
-nt_files_path = "/fred/oz440/max/code/tolicode/files/"
+nt_files_path = "/home/max/code/tolicode/files/"
+# nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 
 
 # %% [markdown]
@@ -737,7 +738,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 500
+n_realisations = 5
 
 # Gradient descent
 common_optimisers = {
@@ -782,14 +783,14 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if data_key != model_key:
         # continue
-        # if data_key != "mvn":
-        #     continue
+        if data_key != "mvn":
+            continue
         # if data_key == "mvn":
         #     continue
         # if data_key != "lin":
         #     continue
-        # if model_key != "lin":
-        #     continue
+        if model_key != "lin":
+            continue
         # if model_key != "mvn":
         #     continue
         model = models[model_key]
@@ -808,6 +809,7 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 model = model.set("Jitter.shear", np.array(0.8))
                 model = model.set("Jitter.r", 0.5 * fwhm_to_det(mag, shear=0.8))
             elif model_key != "mvn" and data_key == "mvn":
+                model = model.set("jitter_mag", np.array(0.01))
                 model = model.set("jitter_angle", angle)
             else:
                 model = model.set(data_dict["params"], data_dict["values"])
@@ -842,7 +844,7 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 gradloss_func=gradloss_func,
                 likelihood_im_fn=loglike_fns[model_key],
                 eps=5e-4,
-                plot=False,
+                plot=True,
                 suffix=f"_{model_key}_{data_key}_{i}",
             )
 
@@ -850,6 +852,6 @@ for model_key in tqdm(models.keys(), desc="Models"):
         sep_dict[f"{model_key}_{data_key}"] = sep_values
 
 # saving
-current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-save_str = current_time + f"_{n_realisations:04d}.npy"
-np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
+# current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+# save_str = current_time + f"_{n_realisations:04d}.npy"
+# np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
