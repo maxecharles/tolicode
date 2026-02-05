@@ -11,16 +11,13 @@ import jax
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platform_name", "gpu")
 
-from jax import numpy as np, random as jr, Array
+from jax import numpy as np, random as jr, scipy as jsp
 import zodiax as zdx
-import dLux as dl
+import dLux
 import dLuxToliman as dlT
-import optax
+from dLuxToliman import AlphaCen
 
-
-import os
 from tqdm import tqdm
-import random
 from datetime import datetime
 import secrets
 
@@ -28,7 +25,6 @@ import secrets
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 import scienceplots
-import cmasher as cmr
 
 plt.style.use(["science", "no-latex"])
 plt.rcParams["image.origin"] = "lower"
@@ -45,64 +41,20 @@ ito_seven = [
     "#F0E442",
 ]
 contrast_three = ["#004488", "#BB5566", "#DDAA33"]
-nt_files_path = "/home/max/code/tolicode/files/"
-# nt_files_path = "/fred/oz440/max/code/tolicode/files/"
-
-
-# %% [markdown]
-# Setting up the model.
+# nt_files_path = "/home/max/code/tolicode/files/"
+nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 
 # %% [markdown]
 # ## Priors
 
-# %%
 from jax.scipy.stats import norm, beta
-
-
-def weibull_logpdf(x, k=1.5, lam=35):
-    x = np.asarray(x)
-    return np.log(k) - k * np.log(lam) + (k - 1) * np.log(x) - (x / lam) ** k
-
-
-# %%
-import jax
-from jax import numpy as np, scipy as jsp, Array
-
-jax.config.update("jax_enable_x64", True)
-
-import zodiax as zdx
-from zodiax import filter_vmap
-
-import dLuxToliman as dlT
-import dLux
-from dLuxToliman import AlphaCen
 
 Source = lambda: dLux.BaseSource
 Optics = lambda: dLux.BaseOpticalSystem
 
 
-def fwhm_to_det(fwhm, shear):
-    return 1e6 * (1 - shear) ** 2 * (fwhm / 2.35482) ** 4
-
-
-def det_to_fwhm(det, shear):
-    return 2.35482 * ((det / 1e6) / (1 - shear) ** 2) ** 0.25
-
-
-def get_shear(fwhm, det):
-    return 1 - np.sqrt((det / 1e6) / (fwhm / 2.35482) ** 4)
-
-
-def powspace(start, stop, power, num):
-    """
-    To generate r values at appropriate intervals.
-    """
-    start = np.power(start, 1 / float(power))
-    stop = np.power(stop, 1 / float(power))
-    return np.power(np.linspace(start, stop, num=num), power)
-
-
 from jax.scipy.stats import norm, beta
+from xfitting_helpers import fwhm_to_det, det_to_fwhm, get_shear, powspace
 
 
 def weibull_logpdf(x, k=1.2, lam=250):
@@ -254,79 +206,6 @@ shm_tel = dlT.JitteredToliman(source=src, optics=optics, **shm_params).set(
 )
 mvn_tel = dlT.Toliman(source=src, optics=mvn_optics).set("detector", mvn_det)
 
-# creating simulated data at a high oversample
-print("Creating simulated data grid...")
-# dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-dlin_tel = lin_tel
-lin_datas = []
-
-# dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-dshm_tel = shm_tel
-shm_datas = []
-
-# dmvn_tel = mvn_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-dmvn_tel = mvn_tel
-mvn_datas = []
-
-for ang in np.linspace(0, 90, 5):
-    for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
-        dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
-        lin_data = {
-            "params": ["jitter_mag", "jitter_angle"],
-            "values": [mag, ang],
-            "data": dlin_tel.jitter_model(),
-        }
-        lin_datas.append(lin_data)
-
-        dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
-        shm_data = {
-            "params": ["jitter_mag", "jitter_angle"],
-            "values": [mag, ang],
-            "data": dshm_tel.jitter_model(),
-        }
-        shm_datas.append(shm_data)
-
-        fwhm = mag
-        r = fwhm_to_det(fwhm, shear=0.1)
-        dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
-        mvn_data = {
-            "params": ["Jitter.r", "Jitter.phi"],
-            "values": [r, ang],
-            "data": dmvn_tel.model(),
-        }
-        mvn_datas.append(mvn_data)
-
-# NOTE make sure to ROUND data before passing here.
-likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.jitter_model())
-
-posterior_fn = lambda model, data, args: likelihood_fn(model, data).sum() + prior_fn(
-    model, args
-)
-
-mvn_likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.model())
-
-mvn_posterior_fn = lambda model, data, args: mvn_likelihood_fn(
-    model, data
-).sum() + prior_fn(model, args)
-
-# Wrapping everything up and returning
-models = {"lin": lin_tel, "shm": shm_tel, "mvn": mvn_tel}
-loglike_fns = {
-    "lin": likelihood_fn,
-    "shm": likelihood_fn,
-    "mvn": mvn_likelihood_fn,
-}
-posterior_fns = {
-    "lin": zdx.filter_jit(posterior_fn),
-    "shm": zdx.filter_jit(posterior_fn),
-    "mvn": zdx.filter_jit(mvn_posterior_fn),
-}
-datas = {
-    "lin": lin_datas,
-    "shm": shm_datas,
-    "mvn": mvn_datas,
-}
-
 common_params = [
     "separation",
     "position_angle",
@@ -357,89 +236,108 @@ params = {
     "mvn": common_params + mvn_params,
 }
 
+# NOTE make sure to ROUND data before passing here.
+likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.jitter_model())
+
+posterior_fn = lambda model, data, args: likelihood_fn(model, data).sum() + prior_fn(
+    model, args
+)
+
+mvn_likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.model())
+
+mvn_posterior_fn = lambda model, data, args: mvn_likelihood_fn(
+    model, data
+).sum() + prior_fn(model, args)
+
+# Wrapping everything up and returning
+models = {"lin": lin_tel, "shm": shm_tel, "mvn": mvn_tel}
+loglike_fns = {
+    "lin": likelihood_fn,
+    "shm": likelihood_fn,
+    "mvn": mvn_likelihood_fn,
+}
+posterior_fns = {
+    "lin": zdx.filter_jit(posterior_fn),
+    "shm": zdx.filter_jit(posterior_fn),
+    "mvn": zdx.filter_jit(mvn_posterior_fn),
+}
+
+# creating simulated data at a high oversample
+print("Creating simulated data grid...")
+# dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+dlin_tel = lin_tel
+lin_datas = []
+
+# dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+dshm_tel = shm_tel
+shm_datas = []
+
+# dmvn_tel = mvn_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
+dmvn_tel = mvn_tel
+mvn_datas = []
+
+
+@zdx.filter_jit
+def calc_cov(model, params, ll_fn, data):
+    return -zdx.covariance_matrix(
+        model,
+        params,
+        ll_fn,
+        data,
+    )
+
+
+for ang in np.linspace(0, 90, 5):
+    for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
+        dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+        data = dlin_tel.jitter_model()
+        cov = calc_cov(dlin_tel, params["lin"], loglike_fns["lin"], data)
+        lin_data = {
+            "params": ["jitter_mag", "jitter_angle"],
+            "values": [mag, ang],
+            "data": data,
+            "cov": cov,
+        }
+        lin_datas.append(lin_data)
+
+        dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+        data = dshm_tel.jitter_model()
+        cov = calc_cov(dlin_tel, params["shm"], loglike_fns["shm"], data)
+        shm_data = {
+            "params": ["jitter_mag", "jitter_angle"],
+            "values": [mag, ang],
+            "data": data,
+            "cov": cov,
+        }
+        shm_datas.append(shm_data)
+
+        fwhm = mag
+        r = fwhm_to_det(fwhm, shear=0.1)
+        dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
+        data = dmvn_tel.model()
+        cov = calc_cov(dlin_tel, params["mvn"], loglike_fns["mvn"], data)
+        mvn_data = {
+            "params": ["Jitter.r", "Jitter.phi"],
+            "values": [r, ang],
+            "data": data,
+            "cov": cov,
+        }
+        mvn_datas.append(mvn_data)
+
+
+datas = {
+    "lin": lin_datas,
+    "shm": shm_datas,
+    "mvn": mvn_datas,
+}
+
+
 # %% [markdown]
 # ## Model Cross-Fitting
 #
 # The code for model cross-fitting to investigate systematic model-introduced bias and a potential increase in separation error.
-
-# %%
-# from setup_jitter import plot_losses  # , summarise_fit
-from matplotlib import colors, colormaps
-
-
-def plot_losses(losses, start, stop=-1, suffix=""):
-    plt.figure(figsize=(16, 5))
-    plt.subplot(1, 2, 1)
-    plt.title("Full Loss")
-    plt.plot(losses)
-
-    if start >= len(losses):
-        start = 0
-    last_losses = losses[start:stop]
-    n = len(last_losses)
-    plt.subplot(1, 2, 2)
-    plt.title(f"Final {n} Losses")
-    plt.plot(np.arange(start, start + n), last_losses)
-
-    plt.tight_layout()
-    # plt.show()
-    plt.savefig(nt_files_path + f"test/losses{suffix}.png", dpi=150)
-    plt.close()
-
-
-def summarise_fit(
-    model,
-    data,
-    loglike_fn,
-    suffix="",
-):
-
-    inferno = colormaps["inferno"]
-    seismic = colormaps["seismic"]
-    inferno.set_bad("k", 0.5)
-    seismic.set_bad("k", 0.5)
-
-    sim = model.model()
-    residual = data - sim
-
-    loglike_im = loglike_fn(model, data)
-    final_loss = np.nanmean(-loglike_im)
-
-    plt.figure(figsize=(10, 4))
-    plt.subplot(1, 2, 1)
-    plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
-    plt.imshow(-loglike_im, cmap="viridis")
-    plt.colorbar()
-
-    plt.subplot(1, 2, 2)
-    plt.title("Mean noise mvnalised slope residual")
-    plt.imshow(residual, cmap=seismic, norm=colors.CenteredNorm())
-    plt.colorbar()
-
-    plt.tight_layout()
-    plt.savefig(nt_files_path + f"test/map{suffix}.png", dpi=150)
-    plt.close()
-
-    if not isinstance(model, dlT.JitteredToliman):
-        plt.figure(figsize=(10, 4))
-        plt.subplot(1, 2, 1)
-        plt.title(f"Simulation")
-        plt.imshow(sim, cmap="inferno")
-        plt.colorbar()
-
-        plt.subplot(1, 2, 2)
-        plt.title("Convolution Kernel")
-        plt.imshow(
-            model.Jitter.generate_kernel(1.00),
-            cmap="cividis",
-            norm=mpl.colors.LogNorm(),
-        )
-        plt.colorbar()
-
-        plt.tight_layout()
-        # plt.close()
-        plt.savefig(nt_files_path + f"test/kernel{suffix}.png", dpi=150)
-        plt.close()
+from xfitting_helpers import plot_losses, summarise_fit
+from matplotlib import colors
 
 
 def run_grad_desc(
@@ -456,6 +354,7 @@ def run_grad_desc(
     verbose=True,
     eps=None,  # termination condition
     suffix="",
+    save_path=nt_files_path,
 ):
     """
     Run gradient descent on a model.
@@ -511,8 +410,8 @@ def run_grad_desc(
                 break
 
     if plot:
-        plot_losses(losses, 10, suffix=suffix)
-        summarise_fit(model, data, likelihood_im_fn, suffix)
+        plot_losses(losses, save_path, 10, suffix=suffix)
+        summarise_fit(model, data, likelihood_im_fn, save_path, suffix)
 
         params_in = params
         for p in np.arange(0, len(params), 2):
@@ -533,7 +432,7 @@ def run_grad_desc(
             plt.subplot(1, 2, 2)
             if p + 1 == len(params_in):
                 plt.tight_layout()
-                plt.savefig(nt_files_path + f"test/params_{p}_{suffix}.png", dpi=150)
+                plt.savefig(save_path + f"test/params_{p}_{suffix}.png", dpi=150)
                 plt.close()
                 break
 
@@ -550,7 +449,7 @@ def run_grad_desc(
             plt.ticklabel_format(style="plain", axis="both", useOffset=False)
 
             plt.tight_layout()
-            plt.savefig(nt_files_path + f"test/params_{p}_{suffix}.png", dpi=150)
+            plt.savefig(save_path + f"test/params_{p}_{suffix}.png", dpi=150)
             plt.close()
 
         m = models_out[-1]
@@ -575,16 +474,13 @@ def run_grad_desc(
         plt.imshow(residual, cmap="coolwarm", norm=colors.CenteredNorm())
         plt.colorbar()
         plt.tight_layout()
-        plt.savefig(nt_files_path + f"test/residuals_{suffix}.png", dpi=150)
+        plt.savefig(save_path + f"test/residuals_{suffix}.png", dpi=150)
         plt.close()
 
     return models_out[-1]
 
 
 # %%
-# TODO JIT THESE
-
-
 @zdx.filter_jit
 def grad_fn(grads, args={}):
 
@@ -672,36 +568,6 @@ def grad_fn(grads, args={}):
                 if "jitter_angle" in optimisers
                 else grads
             )
-            # mag = data_dict["values"][0]
-            # if mag < 0.3:
-            #     grads = (
-            #         grads.multiply("jitter_angle", np.array(6))
-            #         if "jitter_angle" in optimisers
-            #         else grads
-            #     )
-            #     grads = (
-            #         grads.multiply("jitter_mag", np.array(3))
-            #         if "jitter_mag" in optimisers
-            #         else grads
-            #     )
-
-            #     if mag < 0.1:
-            #         grads = (
-            #             grads.multiply("jitter_mag", np.array(2))
-            #             if "jitter_mag" in optimisers
-            #             else grads
-            #         )
-            # elif mag > 0.3:
-            #     grads = (
-            #         grads.multiply("jitter_angle", np.array(0.5))
-            #         if "jitter_angle" in optimisers
-            #         else grads
-            #     )
-            #     grads = (
-            #         grads.multiply("jitter_mag", np.array(0.5))
-            #         if "jitter_mag" in optimisers
-            #         else grads
-            #     )
 
     return grads
 
