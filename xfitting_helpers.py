@@ -1,9 +1,17 @@
 from jax import numpy as np
-from dLuxToliman import Toliman
-from zodiax.base import _format, _get_leaves
+from dLuxToliman import Toliman, JitteredToliman
 import matplotlib as mpl
 from matplotlib import colors, colormaps, pyplot as plt
 import dLuxToliman as dlT
+
+from zodiax.base import Base, _get_leaves, _format
+from typing import Union, List
+from jaxtyping import Array
+from jax.flatten_util import ravel_pytree
+from equinox import tree_at
+
+
+Params = Union[str, List[str]]
 
 
 def fwhm_to_det(fwhm, shear):
@@ -28,14 +36,43 @@ def powspace(start, stop, power, num):
 
 
 class NGDToliman(Toliman):
-    def matmul(self, parameters, matrix):
+    def matmul(self: Base, parameters: Params, matrix: Array) -> Base:
         """
         Left matmul method.
-        # TODO TEST THIS also for non-scalar leaves
         """
         new_parameters = _format(parameters)
-        values = np.array(_get_leaves(self, new_parameters))
-        return self.set(parameters, list(matrix @ values))
+        leaves = _get_leaves(self, new_parameters)
+
+        # dealing with array leaves with size > 1
+        values, unravel_fn = ravel_pytree(leaves)
+        new_values = matrix @ values  # matrix multiplication
+        new_leaves = unravel_fn(new_values)
+
+        # Define 'where' function and update pytree
+        def leaves_fn(pytree):
+            return _get_leaves(pytree, new_parameters)
+
+        return tree_at(leaves_fn, self, new_leaves, is_leaf=lambda leaf: leaf is None)
+
+
+class NGDJitteredToliman(JitteredToliman):
+    def matmul(self: Base, parameters: Params, matrix: Array) -> Base:
+        """
+        Left matmul method.
+        """
+        new_parameters = _format(parameters)
+        leaves = _get_leaves(self, new_parameters)
+
+        # dealing with array leaves with size > 1
+        values, unravel_fn = ravel_pytree(leaves)
+        new_values = matrix @ values  # matrix multiplication
+        new_leaves = unravel_fn(new_values)
+
+        # Define 'where' function and update pytree
+        def leaves_fn(pytree):
+            return _get_leaves(pytree, new_parameters)
+
+        return tree_at(leaves_fn, self, new_leaves, is_leaf=lambda leaf: leaf is None)
 
 
 def plot_losses(

@@ -54,7 +54,7 @@ Optics = lambda: dLux.BaseOpticalSystem
 
 
 from jax.scipy.stats import norm, beta
-from xfitting_helpers import fwhm_to_det, det_to_fwhm, get_shear, powspace
+from xfitting_helpers import fwhm_to_det, NGDToliman, NGDJitteredToliman
 
 
 def weibull_logpdf(x, k=1.2, lam=250):
@@ -198,42 +198,42 @@ mvn_det = dLux.LayeredDetector(
 )
 
 # creating models
-lin_tel = dlT.JitteredToliman(source=src, optics=optics, **lin_params).set(
+lin_tel = NGDJitteredToliman(source=src, optics=optics, **lin_params).set(
     "detector", lin_det
 )
-shm_tel = dlT.JitteredToliman(source=src, optics=optics, **shm_params).set(
+shm_tel = NGDJitteredToliman(source=src, optics=optics, **shm_params).set(
     "detector", shm_det
 )
-mvn_tel = dlT.Toliman(source=src, optics=mvn_optics).set("detector", mvn_det)
+mvn_tel = NGDToliman(source=src, optics=mvn_optics).set("detector", mvn_det)
 
-common_params = [
+common_cov_params = [
     "separation",
     "position_angle",
     "x_position",
     "y_position",
     "log_flux",
     "contrast",
-    # "wavelengths",
-    # "psf_pixel_scale",
+    # # "wavelengths",
+    # # "psf_pixel_scale",
 ]
 
-lin_params = [
+lin_cov_params = [
     "jitter_mag",
     "jitter_angle",
-    "aperture.coefficients",
+    # "aperture.coefficients",
 ]
 
-mvn_params = [
+mvn_cov_params = [
     "Jitter.r",
     "Jitter.shear",
     "Jitter.phi",
-    "aperture.coefficients",
+    # "aperture.coefficients",
 ]
 
-params = {
-    "lin": common_params + lin_params,
-    "shm": common_params + lin_params,
-    "mvn": common_params + mvn_params,
+cov_params = {
+    "lin": common_cov_params + lin_cov_params,
+    "shm": common_cov_params + lin_cov_params,
+    "mvn": common_cov_params + mvn_cov_params,
 }
 
 # NOTE make sure to ROUND data before passing here.
@@ -278,20 +278,42 @@ mvn_datas = []
 
 
 @zdx.filter_jit
-def calc_cov(model, params, ll_fn, data):
-    return -zdx.covariance_matrix(
+def calc_cov(model, params, ll_fn, *ll_args):
+    return zdx.covariance_matrix(
         model,
         params,
         ll_fn,
-        data,
+        *ll_args,
+        save_memory=True,
     )
 
 
 for ang in np.linspace(0, 90, 5):
     for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
+
+        # Setting models
         dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+        dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+
+        fwhm = mag
+        r = fwhm_to_det(fwhm, shear=0.1)
+        dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
+
+        models = {"lin": dlin_tel, "shm": dshm_tel, "mvn": dmvn_tel}
+        # generating data and covariances for
+        # LIN
         data = dlin_tel.jitter_model()
-        cov = calc_cov(dlin_tel, params["lin"], loglike_fns["lin"], data)
+        noisy_data = jr.poisson(jr.PRNGKey(0), data)
+        cov = {
+            model_key: calc_cov(
+                models[model_key],
+                cov_params[model_key],
+                posterior_fns[model_key],
+                noisy_data,
+                {"angle": ang},
+            )
+            for model_key in models.keys()
+        }
         lin_data = {
             "params": ["jitter_mag", "jitter_angle"],
             "values": [mag, ang],
@@ -300,9 +322,19 @@ for ang in np.linspace(0, 90, 5):
         }
         lin_datas.append(lin_data)
 
-        dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+        # SHM
         data = dshm_tel.jitter_model()
-        cov = calc_cov(dlin_tel, params["shm"], loglike_fns["shm"], data)
+        noisy_data = jr.poisson(jr.PRNGKey(0), data)
+        cov = {
+            model_key: calc_cov(
+                models[model_key],
+                cov_params[model_key],
+                posterior_fns[model_key],
+                noisy_data,
+                {"angle": ang},
+            )
+            for model_key in models.keys()
+        }
         shm_data = {
             "params": ["jitter_mag", "jitter_angle"],
             "values": [mag, ang],
@@ -311,11 +343,19 @@ for ang in np.linspace(0, 90, 5):
         }
         shm_datas.append(shm_data)
 
-        fwhm = mag
-        r = fwhm_to_det(fwhm, shear=0.1)
-        dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
+        # MVN
         data = dmvn_tel.model()
-        cov = calc_cov(dlin_tel, params["mvn"], loglike_fns["mvn"], data)
+        noisy_data = jr.poisson(jr.PRNGKey(0), data)
+        cov = {
+            model_key: calc_cov(
+                models[model_key],
+                cov_params[model_key],
+                posterior_fns[model_key],
+                noisy_data,
+                {"angle": ang},
+            )
+            for model_key in models.keys()
+        }
         mvn_data = {
             "params": ["Jitter.r", "Jitter.phi"],
             "values": [r, ang],
@@ -323,7 +363,6 @@ for ang in np.linspace(0, 90, 5):
             "cov": cov,
         }
         mvn_datas.append(mvn_data)
-
 
 datas = {
     "lin": lin_datas,
@@ -347,6 +386,7 @@ def run_grad_desc(
     optimisers: dict,
     gradloss_func,
     likelihood_im_fn,
+    cov_params,
     norm_fn=lambda model, args: model,
     grad_fn=lambda grads, args: grads,
     iters=100,
@@ -379,10 +419,12 @@ def run_grad_desc(
         last_params = model.get(params)
 
         loss, grads = gradloss_func(model, np.round(data), args)
+
+        # NATURAL GRADIENTS
+        grads = grads.matmul(cov_params, args["data_dict"]["cov"][args["model_key"]])
         grads = grad_fn(grads, args)
 
-        # print(grads)
-
+        # Updating
         updates, opt_state = optim.update(grads, opt_state)
         model = zdx.apply_updates(model, updates)
         model = norm_fn(model, args)
@@ -484,7 +526,7 @@ def run_grad_desc(
 @zdx.filter_jit
 def grad_fn(grads, args={}):
 
-    # print("Compiling grad_fn...")
+    print("Compiling grad_fn...")
 
     # if mvn model
     data_dict, model_key, data_key, optimisers = (
@@ -493,82 +535,35 @@ def grad_fn(grads, args={}):
         args["data_key"],
         args["optimisers"].keys(),
     )
-    # if model_key != "mvn" and data_key == "mvn":
-    #     grads = grads.multiply("jitter_mag", np.array(2e-2))
 
     if model_key == "mvn":
 
         if data_key == "mvn":
-            det = data_dict["values"][0]
-            grads = (
-                grads.multiply("Jitter.r", 0.2 * det**1.1)
-                if "Jitter.r" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("Jitter.phi", det ** (-0.1))
-                if "Jitter.phi" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("Jitter.shear", det ** (-0.7))
-                if "Jitter.shear" in optimisers
-                else grads
-            )
+            pass
 
         elif data_key != "mvn":
-            mag = data_dict["values"][0]
-
-            a = 5
-            b = 0.375
-            A = 1e-1
             grads = (
-                grads.multiply("Jitter.r", A * mag**a / b**a)
+                grads.multiply("Jitter.r", np.array(1e-3))
                 if "Jitter.r" in optimisers
                 else grads
             )
-            a = -3.0
-            A = 2e-4
             grads = (
-                grads.multiply("Jitter.shear", A * mag**a / b**a)
+                grads.multiply("Jitter.shear", np.array(1e-3))
                 if "Jitter.shear" in optimisers
                 else grads
             )
-
-            A = 2e-2
-            a = -3
-            # a = -0.5
             grads = (
-                grads.multiply("Jitter.phi", A * mag**a / b**a)
+                grads.multiply("Jitter.phi", np.array(1e-3))
                 if "Jitter.phi" in optimisers
                 else grads
             )
+
     elif model_key != "mvn":
         if data_key == "mvn":
-            det = data_dict["values"][0]
-            grads = (
-                grads.multiply("jitter_angle", 20 * det ** (-0.5))
-                if "jitter_angle" in optimisers
-                else grads
-            )
+            pass
 
         elif data_key != "mvn":
-            mag = data_dict["values"][0]
-
-            m = -55 / 3
-            n = 7.375
-
-            grads = (
-                grads.multiply("jitter_mag", np.array(m * mag + n))
-                if "jitter_mag" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("jitter_angle", np.array(m * mag + n))
-                if "jitter_angle" in optimisers
-                else grads
-            )
-
+            pass
     return grads
 
 
@@ -604,30 +599,30 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 5
+n_realisations = 25
+
 
 # Gradient descent
 common_optimisers = {
-    "separation": sgd(1e-8, 0),
-    "position_angle": sgd(3e-7, 3),
-    "x_position": sgd(5e-9, 0),
-    "y_position": sgd(5e-9, 2),
-    "log_flux": sgd(2e-9, 0),
-    "contrast": sgd(1e-6, 1),
-    "aperture.coefficients": sgd(8e-5, 0),
+    "separation": sgd(1e-1, 0),
+    "position_angle": sgd(1e-1, 3),
+    "x_position": sgd(1e-1, 0),
+    "y_position": sgd(1e-1, 2),
+    "log_flux": sgd(1e-1, 0),
+    "contrast": sgd(1e-1, 1),
+    "aperture.coefficients": sgd(1e-4, 4),
 }
 
 lin_opts = {
-    "jitter_mag": sgd(1e-7, 0),
-    "jitter_angle": sgd(1e-2, 6),
+    "jitter_mag": sgd(1e-1, 3),
+    "jitter_angle": sgd(1e-1, 5),
 }
 
 norm_opts = {
-    "Jitter.r": sgd(5e-3, 1),
-    "Jitter.shear": sgd(1e-4, 5),
-    "Jitter.phi": sgd(2e-1, 0),
+    "Jitter.r": sgd(1e-1, 1),
+    "Jitter.shear": sgd(1e-1, 5),
+    "Jitter.phi": sgd(1e-1, 0),
 }
-
 # looping over models
 for model_key in tqdm(models.keys(), desc="Models"):
 
@@ -648,15 +643,19 @@ for model_key in tqdm(models.keys(), desc="Models"):
         # if data_key != "lin":
         #     continue
         # if data_key != model_key:
-        # continue
-        if data_key != "mvn":
-            continue
+        #     continue
+        # if data_key != "mvn":
+        #     continue
         # if data_key == "mvn":
         #     continue
         # if data_key != "lin":
         #     continue
-        if model_key != "lin":
-            continue
+        # if model_key == "shm":
+        #     continue
+        # if data_key == "shm":
+        #     continue
+        # if model_key != "lin":
+        # continue
         # if model_key != "mvn":
         #     continue
         model = models[model_key]
@@ -706,6 +705,7 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 optimisers=optimisers,
                 norm_fn=norm_fn,
                 grad_fn=grad_fn,
+                cov_params=cov_params[model_key],
                 iters=500,
                 gradloss_func=gradloss_func,
                 likelihood_im_fn=loglike_fns[model_key],
