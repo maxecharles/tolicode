@@ -113,7 +113,10 @@ def summarise_fit(
     inferno.set_bad("k", 0.5)
     seismic.set_bad("k", 0.5)
 
-    sim = model.model()
+    if not isinstance(model, dlT.JitteredToliman):
+        sim = model.model()
+    elif isinstance(model, dlT.JitteredToliman):
+        sim = model.jitter_model()
     residual = data - sim
 
     loglike_im = loglike_fn(model, data)
