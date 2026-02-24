@@ -41,8 +41,8 @@ ito_seven = [
     "#F0E442",
 ]
 contrast_three = ["#004488", "#BB5566", "#DDAA33"]
-# nt_files_path = "/home/max/code/tolicode/files/"
-nt_files_path = "/fred/oz440/max/code/tolicode/files/"
+nt_files_path = "/home/max/code/tolicode/files/"
+# nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 
 # %% [markdown]
 # ## Priors
@@ -54,7 +54,7 @@ Optics = lambda: dLux.BaseOpticalSystem
 
 
 from jax.scipy.stats import norm, beta
-from xfitting_helpers import fwhm_to_det, NGDToliman, NGDJitteredToliman
+from xfitting_helpers import fwhm_to_det, det_to_fwhm, NGDToliman, NGDJitteredToliman
 
 
 def weibull_logpdf(x, k=1.2, lam=250):
@@ -107,6 +107,19 @@ def weibull_logpdf(x, k=1.2, lam=250):
 # plt.close()
 
 
+angle = 0.0
+mag = 0.5 * 0.375
+shear0 = np.array(0.1)
+shear07 = np.array(0.7)
+r = fwhm_to_det(0.5 * 0.375, shear07)
+oversample = 4
+mvn_osamp = 6
+det_pscale = 0.375
+det_npixels = 128
+kernel_size = 17
+n_psfs = 5
+
+
 def prior_fn(model, args={}):
 
     prior = 0
@@ -123,14 +136,17 @@ def prior_fn(model, args={}):
         shear = model.get("Jitter.shear")
         prior += beta.logpdf(shear, a=1.1, b=1.1)
         if "data_key" in args.keys():
-            if args["data_key"] == "mvn":
-                prior += norm.logpdf(x=shear, loc=0.1, scale=0.05)
-            if args["data_key"] != "mvn":
+            if args["data_key"] == "mvn0":
+                prior += norm.logpdf(x=shear, loc=shear0, scale=0.05)
+            if args["data_key"] == "mvn07":
+                prior += norm.logpdf(x=shear, loc=shear07, scale=0.005)
+            if args["data_key"][:3] != "mvn":
                 prior += norm.logpdf(x=shear, loc=0.8, scale=0.002)
 
         # jitter angle phi
         angle = model.get("Jitter.phi")
-    prior += norm.logpdf(x=angle, loc=args["angle"], scale=1.0)
+    prior += norm.logpdf(x=angle, loc=args["angle"], scale=0.1)
+    # prior += norm.logpdf(x=angle, loc=args["angle"], scale=1.0)
 
     # aberration coefficients Z
     aberrations = model.get("aperture.coefficients")
@@ -139,31 +155,19 @@ def prior_fn(model, args={}):
     return prior
 
 
-angle = 0.0
-mag = 0.5 * 0.375
-shear = 0.1
-r = fwhm_to_det(0.5 * 0.375, 0.1)
-oversample = 4
-mvn_osamp = 6
-det_pscale = 0.375
-det_npixels = 128
-kernel_size = 17
-n_psfs = 5
-
-
 lin_params = {
     "jitter_mag": mag,
     "jitter_angle": angle,
     "jitter_shape": "linear",
     "n_psfs": n_psfs,
 }
-shm_params = {
-    "jitter_mag": mag,
-    "jitter_angle": angle,
-    "jitter_shape": "shm",
-    "n_psfs": n_psfs,
-}
-mvn_params = {"r": r, "shear": shear, "phi": angle, "kernel_size": kernel_size}
+# shm_params = {
+#     "jitter_mag": mag,
+#     "jitter_angle": angle,
+#     "jitter_shape": "shm",
+#     "n_psfs": n_psfs,
+# }
+mvn_params = {"r": r, "shear": shear07, "phi": angle, "kernel_size": kernel_size}
 radial_orders = [2, 3]
 
 # Creating common optical system
@@ -189,7 +193,7 @@ src = AlphaCen(
 
 # creating telescopes
 lin_det = dLux.LayeredDetector([("Downsample", dLux.Downsample(oversample))])
-shm_det = lin_det
+# shm_det = lin_det
 mvn_det = dLux.LayeredDetector(
     [
         ("Jitter", dlT.GaussianJitter(**mvn_params)),
@@ -201,9 +205,9 @@ mvn_det = dLux.LayeredDetector(
 lin_tel = NGDJitteredToliman(source=src, optics=optics, **lin_params).set(
     "detector", lin_det
 )
-shm_tel = NGDJitteredToliman(source=src, optics=optics, **shm_params).set(
-    "detector", shm_det
-)
+# shm_tel = NGDJitteredToliman(source=src, optics=optics, **shm_params).set(
+#     "detector", shm_det
+# )
 mvn_tel = NGDToliman(source=src, optics=mvn_optics).set("detector", mvn_det)
 
 common_cov_params = [
@@ -220,61 +224,73 @@ common_cov_params = [
 lin_cov_params = [
     "jitter_mag",
     "jitter_angle",
-    # "aperture.coefficients",
+    "aperture.coefficients",
 ]
 
 mvn_cov_params = [
     "Jitter.r",
-    "Jitter.shear",
-    "Jitter.phi",
-    # "aperture.coefficients",
+    # "Jitter.shear",
+    # "Jitter.phi",
+    "aperture.coefficients",
 ]
 
 cov_params = {
     "lin": common_cov_params + lin_cov_params,
-    "shm": common_cov_params + lin_cov_params,
+    # "shm": common_cov_params + lin_cov_params,
     "mvn": common_cov_params + mvn_cov_params,
 }
 
 # NOTE make sure to ROUND data before passing here.
-likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.jitter_model())
+likelihood_fn = lambda model, data: jsp.stats.norm.logpdf(
+    model.jitter_model(), data, scale=np.sqrt(data)
+)
 
 posterior_fn = lambda model, data, args: likelihood_fn(model, data).sum() + prior_fn(
     model, args
 )
 
-mvn_likelihood_fn = lambda model, data: jsp.stats.poisson.logpmf(data, model.model())
+mvn_likelihood_fn = lambda model, data: jsp.stats.norm.logpdf(
+    model.model(), data, scale=np.sqrt(data)
+)
 
 mvn_posterior_fn = lambda model, data, args: mvn_likelihood_fn(
     model, data
 ).sum() + prior_fn(model, args)
 
 # Wrapping everything up and returning
-models = {"lin": lin_tel, "shm": shm_tel, "mvn": mvn_tel}
+models = {
+    "lin": lin_tel,
+    # "shm": shm_tel,
+    "mvn": mvn_tel,
+}
 loglike_fns = {
     "lin": likelihood_fn,
-    "shm": likelihood_fn,
+    # "shm": likelihood_fn,
     "mvn": mvn_likelihood_fn,
+}
+jitted_loglike_fns = {
+    "lin": zdx.filter_jit(lambda model, data: likelihood_fn(model, data).sum()),
+    # "shm": zdx.filter_jit(likelihood_fn),
+    "mvn": zdx.filter_jit(lambda model, data: mvn_likelihood_fn(model, data).sum()),
 }
 posterior_fns = {
     "lin": zdx.filter_jit(posterior_fn),
-    "shm": zdx.filter_jit(posterior_fn),
+    # "shm": zdx.filter_jit(posterior_fn),
     "mvn": zdx.filter_jit(mvn_posterior_fn),
 }
 
 # creating simulated data at a high oversample
 print("Creating simulated data grid...")
-# dlin_tel = lin_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
 dlin_tel = lin_tel
 lin_datas = []
 
-# dshm_tel = shm_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-dshm_tel = shm_tel
-shm_datas = []
+# dshm_tel = shm_tel
+# shm_datas = []
 
-# dmvn_tel = mvn_tel.set(["oversample", "Downsample.kernel_size"], [8, 8])
-dmvn_tel = mvn_tel
-mvn_datas = []
+dmvn0_tel = mvn_tel.set("Jitter.shear", shear0)
+mvn0_datas = []
+dmvn07_tel = mvn_tel.set("Jitter.shear", shear07)
+mvn07_datas = []
 
 
 @zdx.filter_jit
@@ -288,86 +304,168 @@ def calc_cov(model, params, ll_fn, *ll_args):
     )
 
 
-for ang in np.linspace(0, 90, 5):
-    for mag in np.linspace(0.375 / 5, 0.375 / 1, 5):
+# def zero_offdiags(params, cov_params, cov_mat):
+#     """Zeroing off-diagonal entries in the covariance matrix corresponding to the params arg."""
+#     for p in params:
+#         i = cov_params.index(p)
+#         mask = (
+#             np.ones_like(cov_mat).at[:, i].set(0.0).at[i, :].set(0.0).at[i, i].set(1.0)
+#         )
+#         cov_mat = cov_mat * mask
+
+#     return cov_mat
+
+
+def check_diag(matrix):
+    diag = np.diag(matrix)
+    return np.any(diag <= 0)
+
+
+def check_covdic(cov_dict, diagnostic):
+    for key, cov in cov_dict.items():
+        # print(f"Checking covariance matrix for {key}...")
+        if check_diag(cov):
+            print("WARNING: Non-positive diagonal entries in covariance matrix.")
+            print(diagnostic)
+
+
+def abs_diag(mat: np.ndarray) -> np.ndarray:
+    """Return a copy of mat with its diagonal entries replaced by their absolute values."""
+    return mat.at[np.diag_indices(mat.shape[0])].set(np.abs(np.diag(mat)))
+
+
+for ang in np.array([0.0]):
+    # for ang in np.linspace(0, 90, 5):
+    # for mag in np.linspace(20 * 0.375 / 5, 20 * 0.375 / 1, 5):
+    # for mag in np.array([0.375 / 5]):
+    # for mag in np.linspace(0.375 / 5, 0.375, 5):
+    for mag in np.linspace(0.375 / 5, 3 * 0.375 / 5, 3):
+
+        models = {
+            "lin": lin_tel,
+            # "shm": shm_tel,
+            "mvn": mvn_tel,
+        }
 
         # Setting models
         dlin_tel = dlin_tel.set("jitter_mag", mag).set("jitter_angle", ang)
-        dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
+        # dshm_tel = dshm_tel.set("jitter_mag", mag).set("jitter_angle", ang)
 
         fwhm = mag
-        r = fwhm_to_det(fwhm, shear=0.1)
-        dmvn_tel = dmvn_tel.set("Jitter.r", r).set("Jitter.phi", ang)
+        r0 = fwhm_to_det(fwhm, shear0)
+        r07 = fwhm_to_det(fwhm, shear07)
+        dmvn0_tel = (
+            dmvn0_tel.set("Jitter.r", r0)
+            .set("Jitter.phi", ang)
+            .set("Jitter.shear", shear0)
+        )
+        dmvn07_tel = (
+            dmvn07_tel.set("Jitter.r", r07)
+            .set("Jitter.phi", ang)
+            .set("Jitter.shear", shear07)
+        )
 
-        models = {"lin": dlin_tel, "shm": dshm_tel, "mvn": dmvn_tel}
         # generating data and covariances for
         # LIN
-        data = dlin_tel.jitter_model()
-        noisy_data = jr.poisson(jr.PRNGKey(0), data)
-        cov = {
-            model_key: calc_cov(
-                models[model_key],
-                cov_params[model_key],
-                posterior_fns[model_key],
-                noisy_data,
-                {"angle": ang},
-            )
-            for model_key in models.keys()
-        }
-        lin_data = {
-            "params": ["jitter_mag", "jitter_angle"],
-            "values": [mag, ang],
-            "data": data,
-            "cov": cov,
-        }
-        lin_datas.append(lin_data)
+        # data = dlin_tel.jitter_model()
+        # # noisy_data = jr.poisson(jr.PRNGKey(0), data)
+        # cov = {
+        #     model_key: calc_cov(
+        #         models[model_key],
+        #         # cov_params[model_key] if model_key != "mvn" else common_cov_params,
+        #         # NOTE UNDO THIS
+        #         cov_params[model_key],
+        #         jitted_loglike_fns[model_key],
+        #         data,
+        #     )
+        #     for model_key in models.keys()
+        # }
+
+        # # plt.imshow(
+        # #     cov["lin"], origin="upper", cmap="seismic", norm=mpl.colors.CenteredNorm()
+        # # )
+        # # plt.colorbar()
+        # # plt.show()
+
+        # check_covdic(cov, f"LIN covariance for mag={mag}, ang={ang}...")
+        # for key, c in cov.items():
+        #     print(key, np.diag(c))
+
+        # lin_data = {
+        #     "params": ["jitter_mag", "jitter_angle"],
+        #     "values": [mag, ang],
+        #     "data": data,
+        #     "cov": cov,
+        # }
+        # lin_datas.append(lin_data)
 
         # SHM
-        data = dshm_tel.jitter_model()
-        noisy_data = jr.poisson(jr.PRNGKey(0), data)
-        cov = {
-            model_key: calc_cov(
-                models[model_key],
-                cov_params[model_key],
-                posterior_fns[model_key],
-                noisy_data,
-                {"angle": ang},
-            )
-            for model_key in models.keys()
-        }
-        shm_data = {
-            "params": ["jitter_mag", "jitter_angle"],
-            "values": [mag, ang],
-            "data": data,
-            "cov": cov,
-        }
-        shm_datas.append(shm_data)
 
         # MVN
-        data = dmvn_tel.model()
-        noisy_data = jr.poisson(jr.PRNGKey(0), data)
+        # data = dmvn0_tel.model()
+        # cov = {
+        #     model_key: calc_cov(
+        #         models[model_key],
+        #         # cov_params[model_key] if model_key != "mvn" else common_cov_params,
+        #         # NOTE UNDO THIS
+        #         cov_params[model_key],
+        #         jitted_loglike_fns[model_key],
+        #         data,
+        #     )
+        #     for model_key in models.keys()
+        # }
+        # check_covdic(cov, f"MVN0 covariance for mag={mag}, ang={ang}...")
+        # for key, c in cov.items():
+        #     print(key, np.diag(c))
+        #     # cov[key] = abs_diag(c)
+
+        # mvn0_data = {
+        #     "params": ["Jitter.r", "Jitter.phi", "Jitter.shear"],
+        #     "values": [r0, ang, shear0],
+        #     "data": data,
+        #     "cov": cov,
+        # }
+        # mvn0_datas.append(mvn0_data)
+
+        data = dmvn07_tel.model()
         cov = {
             model_key: calc_cov(
                 models[model_key],
+                # cov_params[model_key] if model_key != "mvn" else common_cov_params,
+                # NOTE UNDO THIS
                 cov_params[model_key],
-                posterior_fns[model_key],
-                noisy_data,
-                {"angle": ang},
+                jitted_loglike_fns[model_key],
+                data,
             )
             for model_key in models.keys()
         }
-        mvn_data = {
-            "params": ["Jitter.r", "Jitter.phi"],
-            "values": [r, ang],
+
+        check_covdic(cov, f"MVN07 covariance for mag={mag}, ang={ang}...")
+        for key, c in cov.items():
+            print(key, np.diag(c))
+        # cov["lin"] = zero_offdiags(
+        #     ["jitter_mag", "jitter_angle"], cov_params["lin"], cov["lin"]
+        # )
+        # cov["lin"] = zero_offdiags(["Jitter.r"], cov_params["mvn"], cov["mvn"])
+        mvn07_data = {
+            "params": ["Jitter.r", "Jitter.phi", "Jitter.shear"],
+            "values": [r07, ang, shear07],
             "data": data,
             "cov": cov,
         }
-        mvn_datas.append(mvn_data)
+        mvn07_datas.append(mvn07_data)
 
 datas = {
-    "lin": lin_datas,
-    "shm": shm_datas,
-    "mvn": mvn_datas,
+    # "lin": lin_datas,
+    # "shm": shm_datas,
+    # "mvn0": mvn0_datas,
+    "mvn07": mvn07_datas,
+}
+
+models = {
+    "lin": lin_tel,
+    # "shm": shm_tel,
+    "mvn": mvn_tel,
 }
 
 
@@ -405,8 +503,14 @@ def run_grad_desc(
     optim, opt_state = zdx.get_optimiser(model, params, list(optimisers.values()))
     losses, models_out = [], []
 
-    norm_fn = zdx.filter_jit(norm_fn)
+    # norm_fn = zdx.filter_jit(norm_fn)
     # grad_fn = zdx.filter_jit(grad_fn)
+
+    if plot:
+        try:
+            summarise_fit(model, data, likelihood_im_fn, save_path, f"_INIT{suffix}")
+        except:
+            print("ERROR IN INITIAL FIT SUMMARY PLOT.")
 
     if verbose:
         t = tqdm(range(iters), desc="Gradient Descent")
@@ -418,7 +522,8 @@ def run_grad_desc(
         # for termination condition
         last_params = model.get(params)
 
-        loss, grads = gradloss_func(model, np.round(data), args)
+        loss, grads = gradloss_func(model, data, args)
+        # loss, grads = gradloss_func(model, np.round(data), args)
 
         # NATURAL GRADIENTS
         grads = grads.matmul(cov_params, args["data_dict"]["cov"][args["model_key"]])
@@ -452,72 +557,83 @@ def run_grad_desc(
                 break
 
     if plot:
-        plot_losses(losses, save_path, 10, suffix=suffix)
-        summarise_fit(model, data, likelihood_im_fn, save_path, suffix)
+        try:
+            plot_losses(losses, save_path, 10, suffix=suffix)
+        except:
+            print("ERROR IN PLOTTING LOSSES.")
+        try:
+            summarise_fit(model, data, likelihood_im_fn, save_path, suffix)
+        except:
+            print("ERROR IN FIT SUMMARY PLOT.")
+        try:
+            params_in = params
+            for p in np.arange(0, len(params), 2):
+                plt.figure(figsize=(10, 3))
+                plt.subplot(1, 2, 1)
 
-        params_in = params
-        for p in np.arange(0, len(params), 2):
-            plt.figure(figsize=(10, 3))
-            plt.subplot(1, 2, 1)
+                param = params_in[p]
+                param_out = np.array([m.get(param) for m in models_out])
 
-            param = params_in[p]
-            param_out = np.array([m.get(param) for m in models_out])
+                if param_out.size // iters > 1:
+                    plt.plot(range(i + 1), param_out - param_out[0], label=param)
+                else:
+                    plt.plot(range(i + 1), param_out, label=param)
+                plt.xlabel("Epoch")
+                plt.legend()
+                plt.ticklabel_format(style="plain", axis="both", useOffset=False)
 
-            if param_out.size // iters > 1:
-                plt.plot(range(i + 1), param_out - param_out[0], label=param)
-            else:
-                plt.plot(range(i + 1), param_out, label=param)
-            plt.xlabel("Epoch")
-            plt.legend()
-            plt.ticklabel_format(style="plain", axis="both", useOffset=False)
+                plt.subplot(1, 2, 2)
+                if p + 1 == len(params_in):
+                    plt.tight_layout()
+                    plt.savefig(save_path + f"test/params_{p}_{suffix}.png", dpi=150)
+                    plt.close()
+                    break
 
-            plt.subplot(1, 2, 2)
-            if p + 1 == len(params_in):
+                param = params_in[p + 1]
+                param_out = np.array([m.get(param) for m in models_out])
+
+                if param_out.size // iters > 1:
+                    plt.plot(range(i + 1), param_out - param_out[0], label=param)
+                else:
+                    plt.plot(range(i + 1), param_out, label=param)
+
+                plt.xlabel("Epoch")
+                plt.legend()
+                plt.ticklabel_format(style="plain", axis="both", useOffset=False)
+
                 plt.tight_layout()
                 plt.savefig(save_path + f"test/params_{p}_{suffix}.png", dpi=150)
                 plt.close()
-                break
+        except:
+            print("ERROR IN PLOTTING PARAM CURVES.")
 
-            param = params_in[p + 1]
-            param_out = np.array([m.get(param) for m in models_out])
+        try:
+            m = models_out[-1]
+            if isinstance(m, dlT.JitteredToliman):
+                sim = m.jitter_model()
+            elif isinstance(m, dlT.Toliman):
+                sim = m.model()
 
-            if param_out.size // iters > 1:
-                plt.plot(range(i + 1), param_out - param_out[0], label=param)
-            else:
-                plt.plot(range(i + 1), param_out, label=param)
-
-            plt.xlabel("Epoch")
-            plt.legend()
-            plt.ticklabel_format(style="plain", axis="both", useOffset=False)
-
+            # plot residuals
+            residual = data - sim
+            plt.figure(figsize=(12, 4))
+            plt.subplot(1, 3, 1)
+            plt.title("Model")
+            plt.imshow(sim, cmap="inferno")
+            plt.colorbar()
+            plt.subplot(1, 3, 2)
+            plt.title("Data")
+            plt.imshow(data, cmap="inferno")
+            plt.colorbar()
+            plt.subplot(1, 3, 3)
+            plt.title("Residual")
+            plt.imshow(residual, cmap="coolwarm", norm=colors.CenteredNorm())
+            plt.colorbar()
             plt.tight_layout()
-            plt.savefig(save_path + f"test/params_{p}_{suffix}.png", dpi=150)
+            plt.savefig(save_path + f"test/residuals_{suffix}.png", dpi=150)
             plt.close()
-
-        m = models_out[-1]
-        if isinstance(m, dlT.JitteredToliman):
-            sim = m.jitter_model()
-        elif isinstance(m, dlT.Toliman):
-            sim = m.model()
-
-        # plot residuals
-        residual = data - sim
-        plt.figure(figsize=(12, 4))
-        plt.subplot(1, 3, 1)
-        plt.title("Model")
-        plt.imshow(sim, cmap="inferno")
-        plt.colorbar()
-        plt.subplot(1, 3, 2)
-        plt.title("Data")
-        plt.imshow(data, cmap="inferno")
-        plt.colorbar()
-        plt.subplot(1, 3, 3)
-        plt.title("Residual")
-        plt.imshow(residual, cmap="coolwarm", norm=colors.CenteredNorm())
-        plt.colorbar()
-        plt.tight_layout()
-        plt.savefig(save_path + f"test/residuals_{suffix}.png", dpi=150)
-        plt.close()
+        except:
+            print("ERROR IN PLOTTING RESIDUALS.")
 
     return models_out[-1]
 
@@ -536,34 +652,84 @@ def grad_fn(grads, args={}):
         args["optimisers"].keys(),
     )
 
+    mag = data_dict["values"][0]
+
     if model_key == "mvn":
 
-        if data_key == "mvn":
-            pass
+        match data_key:
+            case "mvn0":
+                grads = (
+                    grads.multiply("Jitter.r", 1e-1 * mag**2)
+                    if "Jitter.r" in optimisers
+                    else grads
+                )
+                grads = (
+                    grads.multiply("Jitter.shear", 1 / mag)
+                    if "Jitter.shear" in optimisers
+                    else grads
+                )
+            case "mvn07":
+                grads = (
+                    grads.multiply("Jitter.r", 1e-1 * mag**2)
+                    if "Jitter.r" in optimisers
+                    else grads
+                )
+                grads = (
+                    grads.multiply("Jitter.shear", 2e-2)
+                    if "Jitter.shear" in optimisers
+                    else grads
+                )
+            case "lin":
+                pass
 
-        elif data_key != "mvn":
-            grads = (
-                grads.multiply("Jitter.r", np.array(1e-3))
-                if "Jitter.r" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("Jitter.shear", np.array(1e-3))
-                if "Jitter.shear" in optimisers
-                else grads
-            )
-            grads = (
-                grads.multiply("Jitter.phi", np.array(1e-3))
-                if "Jitter.phi" in optimisers
-                else grads
-            )
+        # if data_key == "mvn07":
+        #     mag = data_dict["values"][0]
+        #     m = det_to_fwhm(mag, shear07) / 0.375
+
+        #     grads = (
+        #         grads.multiply("Jitter.shear", 1e-6 / m)
+        #         if "Jitter.shear" in optimisers
+        #         else grads
+        #     )
+
+        # elif data_key[:3] != "mvn":
+        #     mag = data_dict["values"][0]
+        #     m = mag / 0.375
+        #     grads = (
+        #         grads.multiply("Jitter.r", 1e-2 * m**4)
+        #         if "Jitter.r" in optimisers
+        #         else grads
+        #     )
+        #     grads = (
+        #         grads.multiply("Jitter.shear", 1e-7)
+        #         if "Jitter.shear" in optimisers
+        #         else grads
+        #     )
+        #     grads = (
+        #         grads.multiply("Jitter.phi", 1e-2 / m)
+        #         if "Jitter.phi" in optimisers
+        #         else grads
+        #     )
 
     elif model_key != "mvn":
-        if data_key == "mvn":
-            pass
+        match data_key:
+            case "lin":
+                m = mag / 0.375
+            case "mvn0":
+                m = det_to_fwhm(mag, shear0) / 0.375
+            case "mvn07":
+                m = det_to_fwhm(mag, shear07) / 0.375
 
-        elif data_key != "mvn":
-            pass
+        grads = (
+            grads.multiply("jitter_mag", 1 / m**2)
+            if "jitter_mag" in optimisers
+            else grads
+        )
+        grads = (
+            grads.multiply("jitter_angle", m**2)
+            if "jitter_angle" in optimisers
+            else grads
+        )
     return grads
 
 
@@ -589,6 +755,11 @@ def norm_fn(model, args={}):
         det = np.clip(det, min=1e-16, max=None)
         model = model.set("Jitter.r", det)
 
+    elif model_key == "lin" or model_key == "shm":
+        jitter_mag = model.get("jitter_mag")
+        jitter_mag = np.clip(jitter_mag, 0.0, None)
+        model = model.set("jitter_mag", jitter_mag)
+
     return model
 
 
@@ -599,7 +770,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 25
+n_realisations = 3
 
 
 # Gradient descent
@@ -610,18 +781,18 @@ common_optimisers = {
     "y_position": sgd(1e-1, 2),
     "log_flux": sgd(1e-1, 0),
     "contrast": sgd(1e-1, 1),
-    "aperture.coefficients": sgd(1e-4, 4),
+    "aperture.coefficients": sgd(1e-1, 4),
 }
 
 lin_opts = {
-    "jitter_mag": sgd(1e-1, 3),
-    "jitter_angle": sgd(1e-1, 5),
+    "jitter_mag": sgd(2e-2, 5),
+    "jitter_angle": sgd(2e-2, 10),
 }
 
 norm_opts = {
-    "Jitter.r": sgd(1e-1, 1),
-    "Jitter.shear": sgd(1e-1, 5),
-    "Jitter.phi": sgd(1e-1, 0),
+    "Jitter.r": sgd(1e-1, 3),
+    "Jitter.shear": sgd(1e-4, 10),
+    "Jitter.phi": sgd(1e-3, 10),
 }
 # looping over models
 for model_key in tqdm(models.keys(), desc="Models"):
@@ -644,20 +815,22 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if data_key != model_key:
         #     continue
-        # if data_key != "mvn":
+        # if data_key != "mvn07":
+        #     continue
+        # if data_key[:3] == "mvn":
         #     continue
         # if data_key == "mvn":
         #     continue
-        # if data_key != "lin":
+        # if data_key == "lin":
         #     continue
         # if model_key == "shm":
         #     continue
         # if data_key == "shm":
         #     continue
         # if model_key != "lin":
-        # continue
-        # if model_key != "mvn":
         #     continue
+        if model_key != "mvn":
+            continue
         model = models[model_key]
         sep_values = np.array([], dtype=np.float64)
 
@@ -666,16 +839,23 @@ for model_key in tqdm(models.keys(), desc="Models"):
 
             data_dict = datas[data_key][i % len(datas[data_key])]
             data = data_dict["data"]
+            mag = data_dict["values"][0]
             angle = data_dict["values"][1]
 
-            if model_key == "mvn" and data_key != "mvn":
-                mag = data_dict["values"][0]
-                model = model.set("Jitter.phi", angle)
-                model = model.set("Jitter.shear", np.array(0.8))
-                model = model.set("Jitter.r", 0.5 * fwhm_to_det(mag, shear=0.8))
-            elif model_key != "mvn" and data_key == "mvn":
-                model = model.set("jitter_mag", np.array(0.01))
+            if model_key == "mvn" and data_key[:3] != "mvn":
+                # model = model.set("Jitter.phi", angle)
+                # model = model.set("Jitter.shear", np.array(0.8))
+                # model = model.set("Jitter.r", 0.5 * fwhm_to_det(mag, shear=0.8))
+                pass
+            elif model_key != "mvn" and data_key[:3] == "mvn":
+                match data_key:
+                    case "mvn0":
+                        m = det_to_fwhm(mag, shear0)
+                    case "mvn07":
+                        m = det_to_fwhm(mag, shear07)
+                model = model.set("jitter_mag", m)
                 model = model.set("jitter_angle", angle)
+
             else:
                 model = model.set(data_dict["params"], data_dict["values"])
 
@@ -697,6 +877,18 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 data_dict["values"][0],
                 data_dict["values"][1],
             )
+
+            if model_key == "mvn":
+                match data_key[:3]:
+                    case "mvn":
+                        cov_ps = [
+                            cp
+                            for cp in cov_params["mvn"]
+                            if cp not in ["Jitter.shear", "Jitter.phi"]
+                        ]
+            elif model_key != "mvn":
+                cov_ps = cov_params[model_key]
+
             # RUN GRAD DESCENT
             gd_model = run_grad_desc(
                 model,
@@ -705,13 +897,13 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 optimisers=optimisers,
                 norm_fn=norm_fn,
                 grad_fn=grad_fn,
-                cov_params=cov_params[model_key],
-                iters=500,
+                cov_params=cov_ps,
+                iters=150,
                 gradloss_func=gradloss_func,
                 likelihood_im_fn=loglike_fns[model_key],
                 eps=5e-4,
                 plot=True,
-                suffix=f"_{model_key}_{data_key}_{i}",
+                suffix=f"{model_key}_{data_key}_{i}",
             )
 
             sep_values = np.append(sep_values, gd_model.separation)
@@ -721,3 +913,5 @@ for model_key in tqdm(models.keys(), desc="Models"):
 # current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
 # save_str = current_time + f"_{n_realisations:04d}.npy"
 # np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
+
+# %%
