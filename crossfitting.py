@@ -124,10 +124,17 @@ def prior_fn(model, args={}):
 
     prior = 0
 
+    # aberration coefficients Z
+    aberrations = model.get("aperture.coefficients")
+    prior += norm.logpdf(x=aberrations, loc=0.0, scale=4.0).sum()
+
+    if model_key == "raw":
+        return prior
+
     if isinstance(model, dlT.JitteredToliman):
         # jitter angle phi
         angle = model.get("jitter_angle")
-    elif isinstance(model, dlT.Toliman):
+    elif model_key == "mvn":
         # determinant r
         det = model.get("Jitter.r")
         prior += weibull_logpdf(det)
@@ -146,11 +153,6 @@ def prior_fn(model, args={}):
         # jitter angle phi
         angle = model.get("Jitter.phi")
     prior += norm.logpdf(x=angle, loc=args["angle"], scale=0.1)
-    # prior += norm.logpdf(x=angle, loc=args["angle"], scale=1.0)
-
-    # aberration coefficients Z
-    aberrations = model.get("aperture.coefficients")
-    prior += norm.logpdf(x=aberrations, loc=0.0, scale=4.0).sum()
 
     return prior
 
@@ -210,6 +212,8 @@ shm_tel = NGDJitteredToliman(source=src, optics=optics, **shm_params).set(
 )
 mvn_tel = NGDToliman(source=src, optics=mvn_optics).set("detector", mvn_det)
 
+raw_tel = mvn_tel.set(["optics", "detector"], [optics, lin_det])
+
 common_cov_params = [
     "separation",
     "position_angle",
@@ -259,7 +263,7 @@ mvn_posterior_fn = lambda model, data, args: mvn_likelihood_fn(
 
 # Wrapping everything up and returning
 models = {
-    "raw": lin_tel.set("jitter_mag", 0.0).set("jitter_angle", 0.0),
+    "raw": raw_tel,
     "lin": lin_tel,
     "shm": shm_tel,
     "mvn": mvn_tel,
@@ -482,6 +486,7 @@ datas = {
 }
 
 models = {
+    "raw": raw_tel,
     "lin": lin_tel,
     "shm": shm_tel,
     "mvn": mvn_tel,
@@ -657,7 +662,6 @@ def run_grad_desc(
     return models_out[-1]
 
 
-# %%
 @zdx.filter_jit
 def grad_fn(grads, args={}):
 
@@ -700,7 +704,7 @@ def grad_fn(grads, args={}):
                     else grads
                 )
 
-    elif model_key != "mvn":
+    elif model_key == "lin" or model_key == "shm":
         match data_key:
             case "lin" | "shm":
                 m = mag / 0.375
@@ -842,8 +846,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if model_key != "lin":
         #     continue
-        # if model_key != "mvn":
-        #     continue
+        if model_key != "raw":
+            continue
         model = models[model_key]
         sep_values = np.array([], dtype=np.float64)
 
@@ -869,7 +873,7 @@ for model_key in tqdm(models.keys(), desc="Models"):
                     model = model.set("jitter_mag", m)
                     model = model.set("jitter_angle", angle)
 
-            else:
+            elif model_key != "raw":
                 model = model.set(data_dict["params"], data_dict["values"])
 
             # poisson draw!
