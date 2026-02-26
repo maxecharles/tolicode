@@ -138,21 +138,24 @@ def summarise_fit(
     plt.close()
 
     if not isinstance(model, dlT.JitteredToliman):
-        plt.figure(figsize=(10, 4))
-        plt.subplot(1, 2, 1)
-        plt.title(f"Simulation")
-        plt.imshow(sim, cmap="inferno")
-        plt.colorbar()
+        try:
+            plt.figure(figsize=(10, 4))
+            plt.subplot(1, 2, 1)
+            plt.title(f"Simulation")
+            plt.imshow(sim, cmap="inferno")
+            plt.colorbar()
 
-        plt.subplot(1, 2, 2)
-        plt.title("Convolution Kernel")
-        plt.imshow(
-            model.Jitter.generate_kernel(1.00),
-            cmap="cividis",
-            norm=mpl.colors.LogNorm(),
-        )
-        plt.colorbar()
+            plt.subplot(1, 2, 2)
+            plt.title("Convolution Kernel")
+            plt.imshow(
+                model.Jitter.generate_kernel(1.00),
+                cmap="cividis",
+                norm=mpl.colors.LogNorm(),
+            )
+            plt.colorbar()
 
-        plt.tight_layout()
-        plt.savefig(save_path + f"test/kernel{suffix}.png", dpi=150)
-        plt.close()
+            plt.tight_layout()
+            plt.savefig(save_path + f"test/kernel{suffix}.png", dpi=150)
+            plt.close()
+        except:
+            pass

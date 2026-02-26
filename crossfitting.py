@@ -20,6 +20,7 @@ from dLuxToliman import AlphaCen
 from tqdm import tqdm
 from datetime import datetime
 import secrets
+import os
 
 # plotting
 import matplotlib as mpl
@@ -41,8 +42,8 @@ ito_seven = [
     "#F0E442",
 ]
 contrast_three = ["#004488", "#BB5566", "#DDAA33"]
-nt_files_path = "/home/max/code/tolicode/files/"
-# nt_files_path = "/fred/oz440/max/code/tolicode/files/"
+# nt_files_path = "/home/max/code/tolicode/files/"
+nt_files_path = "/fred/oz440/max/code/tolicode/files/"
 
 # %% [markdown]
 # ## Priors
@@ -310,7 +311,7 @@ def calc_cov(model, params, ll_fn, *ll_args):
         params,
         ll_fn,
         *ll_args,
-        save_memory=True,
+        save_memory=False,
     )
 
 
@@ -785,7 +786,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 3
+n_realisations = 9
 
 
 # Gradient descent
@@ -846,8 +847,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
         #     continue
         # if model_key != "lin":
         #     continue
-        if model_key != "raw":
-            continue
+        # if model_key != "raw":
+        #     continue
         model = models[model_key]
         sep_values = np.array([], dtype=np.float64)
 
@@ -904,11 +905,12 @@ for model_key in tqdm(models.keys(), desc="Models"):
                 norm_fn=norm_fn,
                 grad_fn=grad_fn,
                 cov_params=cov_params[model_key],
-                iters=150,
+                iters=500,
                 gradloss_func=gradloss_func,
                 likelihood_im_fn=loglike_fns[model_key],
-                eps=5e-4,
-                plot=True,
+                eps=2e-4,
+                plot=False,
+                # plot=True,
                 suffix=f"{model_key}_{data_key}_{i}",
             )
 
@@ -916,8 +918,8 @@ for model_key in tqdm(models.keys(), desc="Models"):
         sep_dict[f"{model_key}_{data_key}"] = sep_values
 
 # saving
-# current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-# save_str = current_time + f"_{n_realisations:04d}.npy"
-# np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
+current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+save_str = current_time + f"_{n_realisations:04d}.npy"
+np.save(os.path.join(sep_dict_save_dir, save_str), sep_dict)
 
 # %%
