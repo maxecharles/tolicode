@@ -786,7 +786,7 @@ sep_dict_save_dir = nt_files_path + "results/xfit/"
 
 
 sep_dict = {}
-n_realisations = 9
+n_realisations = 180
 
 
 # Gradient descent
